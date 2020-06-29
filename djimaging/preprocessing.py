@@ -6,16 +6,6 @@ from djutils.templates import required
 
 
 @schema
-class CorrectionChannel(dj.Manual):
-    definition = """ # channel to use for raster and motion correction
-    -> mesoscan.Scan
-    -> scope.Field
-    ---
-    -> scope.Channel
-    """
-
-
-@schema
 class RasterCorrection(dj.Computed):
     definition = """ # raster correction for bidirectional resonant scans
     -> mesoscan.ScanInfo                # animal_id, session, scan_idx, version

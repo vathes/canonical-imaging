@@ -1,2 +1,3 @@
 datajoint
 canonical-utils @ https://github.com/vathes/canonical-utils.git
+scanreader @ https://github.com/atlab/scanreader.git

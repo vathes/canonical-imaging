@@ -36,7 +36,7 @@ class CellCompartment(dj.Lookup):
 @schema
 class SegmentationTask(dj.Manual):
     definition = """ # defines the target of segmentation and the channel to use
-    -> experiment.Scan
+    -> mesoscan.Scan
     -> scope.Field
     -> scope.Channel
     -> SegmentationMethod
