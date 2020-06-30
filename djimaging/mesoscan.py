@@ -82,21 +82,6 @@ class ScanInfo(dj.Imported):
         scan_filename = self._get_scan_image_files(key)
         scan = scanreader.read_scan(scan_filename)
 
-        # Get attributes
-        tuple_ = key.copy()  # in case key is reused somewhere else
-        tuple_['nfields'] = scan.num_fields
-        tuple_['nchannels'] = scan.num_channels
-        tuple_['nframes'] = scan.num_frames
-        tuple_['nframes_requested'] = scan.num_requested_frames
-        tuple_['x'] = scan.motor_position_at_zero[0]
-        tuple_['y'] = scan.motor_position_at_zero[1]
-        tuple_['fps'] = scan.fps
-        tuple_['bidirectional'] = scan.is_bidirectional
-        tuple_['usecs_per_line'] = scan.seconds_per_line * 1e6
-        tuple_['fill_fraction'] = scan.temporal_fill_fraction
-        tuple_['nrois'] = scan.num_rois
-        tuple_['valid_depth'] = True
-
         # Insert in ScanInfo
         self.insert1(dict(key,
                           nfields=scan.num_fields,

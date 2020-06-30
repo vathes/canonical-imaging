@@ -9,8 +9,8 @@ class SegmentationMethod(dj.Lookup):
     definition = """ # methods for mask extraction for multi-photon scans
     segmentation_method         : tinyint
     ---
-    name                        : varchar(16)
-    details                     : varchar(255)
+    method_name                 : varchar(16)
+    method_desc                 : varchar(255)
     language                    : enum('matlab', 'python')  # implementation language
     """
     contents = [
