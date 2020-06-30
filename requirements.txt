@@ -1,3 +1,7 @@
 datajoint
+scipy
+pyfftw
+imreg_dft
+sklearn
 canonical-utils @ https://github.com/vathes/canonical-utils.git
 scanreader @ https://github.com/atlab/scanreader.git

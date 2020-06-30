@@ -12,7 +12,7 @@ schema = SchemaTemplate()
 @schema
 class Field(dj.Lookup):
     definition = """ # fields in mesoscope scans
-    field       : tinyint
+    field       : tinyint  # 0-based indexing
     """
     contents = [[i] for i in range(1, 25)]
 
@@ -20,7 +20,7 @@ class Field(dj.Lookup):
 @schema
 class Channel(dj.Lookup):
     definition = """  # recording channel
-    channel     : tinyint
+    channel     : tinyint  # 0-based indexing
     """
     contents = [[i] for i in range(1, 5)]
 

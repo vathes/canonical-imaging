@@ -101,7 +101,7 @@ class ScanInfo(dj.Imported):
         for field_id in range(scan.num_fields):
             x_zero, y_zero, _ = scan.motor_position_at_zero  # motor x, y at ScanImage's 0
             self.Field.insert1(dict(key,
-                                    field=field_id + 1,
+                                    field=field_id,
                                     px_height=scan.field_heights[field_id],
                                     px_width=scan.field_widths[field_id],
                                     um_height=scan.field_heights_in_microns[field_id],
@@ -114,7 +114,7 @@ class ScanInfo(dj.Imported):
 
         # Fill in CorrectionChannel if only one channel
         if scan.num_channels == 1:
-            CorrectionChannel.insert([dict(key, field=field_id + 1, channel=1)
+            CorrectionChannel.insert([dict(key, field=field_id, channel=0)
                                       for field_id in range(scan.num_fields)], ignore_extra_fields=True)
 
 
