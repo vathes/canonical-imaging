@@ -1,7 +1,7 @@
 import datajoint as dj
 
-from . import scope, mesoscan, preprocessing
-from .mesoscan import schema
+from . import scope, imaging, preprocessing
+from .imaging import schema
 
 
 @schema

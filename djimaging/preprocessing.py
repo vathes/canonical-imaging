@@ -2,8 +2,8 @@ import datajoint as dj
 import scanreader
 import numpy as np
 
-from . import scope, mesoscan
-from .mesoscan import schema
+from . import scope, imaging
+from .imaging import schema
 from ..utils import galvo_corrections, performance
 
 
@@ -20,7 +20,7 @@ class RasterCorrection(dj.Computed):
     def get_correct_raster(self):
         """ Returns a function to perform raster correction on the scan. """
         raster_phase = self.fetch1('raster_phase')
-        fill_fraction = (mesoscan.ScanInfo & self).fetch1('fill_fraction')
+        fill_fraction = (imaging.ScanInfo & self).fetch1('fill_fraction')
         if abs(raster_phase) < 1e-7:
             correct_raster = lambda scan: scan.astype(np.float32, copy=False)
         else:
@@ -32,11 +32,11 @@ class RasterCorrection(dj.Computed):
         from scipy.signal.windows import tukey
 
         # Read the scan
-        scan_filename = mesoscan.ScanInfo._get_scan_image_files(key)
+        scan_filename = imaging.ScanInfo._get_scan_image_files(key)
         scan = scanreader.read_scan(scan_filename, dtype=np.float32)
 
         # Select correction channel
-        channel = (mesoscan.CorrectionChannel & key).fetch1('channel')
+        channel = (scan.CorrectionChannel & key).fetch1('channel')
         field_id = key['field']
 
         # Load some frames from the middle of the scan
@@ -63,7 +63,7 @@ class RasterCorrection(dj.Computed):
 
 @schema
 class MotionCorrection(dj.Computed):
-    definition = """ # motion correction for galvo scans
+    definition = """ 
     -> RasterCorrection
     ---
     motion_template                 : longblob      # image used as alignment template
@@ -80,12 +80,12 @@ class MotionCorrection(dj.Computed):
         from scipy import ndimage
 
         # Read the scan
-        scan_filename = mesoscan.ScanInfo._get_scan_image_files(key)
+        scan_filename = imaging.ScanInfo._get_scan_image_files(key)
         scan = scanreader.read_scan(scan_filename, dtype=np.float32)
 
         # Get some params
-        px_height, px_width = (mesoscan.ScanInfo.Field & key).fetch1('px_height', 'px_width')
-        channel = (mesoscan.CorrectionChannel & key).fetch1('channel')
+        px_height, px_width = (scan.ScanInfo.Field & key).fetch1('px_height', 'px_width')
+        channel = (scan.CorrectionChannel & key).fetch1('channel')
         field_id = key['field']
 
         # Load some frames from middle of scan to compute template
@@ -110,7 +110,7 @@ class MotionCorrection(dj.Computed):
         # Map: compute motion shifts in parallel
         f = performance.parallel_motion_shifts # function to map
         raster_phase = (RasterCorrection & key).fetch1('raster_phase')
-        fill_fraction = (mesoscan.ScanInfo & key).fetch1('fill_fraction')
+        fill_fraction = (scan.ScanInfo & key).fetch1('fill_fraction')
         kwargs = {'raster_phase': raster_phase, 'fill_fraction': fill_fraction,
                   'template': template}
         results = performance.map_frames(f, scan, field_id=field_id,
@@ -126,7 +126,7 @@ class MotionCorrection(dj.Computed):
             x_shifts[frames] = chunk_x_shifts
 
         # Detect outliers
-        max_y_shift, max_x_shift = 20 / (mesoscan.ScanInfo.Field & key).microns_per_pixel
+        max_y_shift, max_x_shift = 20 / (scan.ScanInfo.Field & key).microns_per_pixel
         y_shifts, x_shifts, outliers = galvo_corrections.fix_outliers(y_shifts, x_shifts,
                                                                       max_y_shift, max_x_shift)
 
@@ -178,14 +178,14 @@ class SummaryImages(dj.Computed):
 
     def make(self, key):
         # Read the scan
-        scan_filename = mesoscan.ScanInfo._get_scan_image_files(key)
+        scan_filename = imaging.ScanInfo._get_scan_image_files(key)
         scan = scanreader.read_scan(scan_filename, dtype=np.float32)
 
         for channel in range(scan.num_channels):
             # Map: Compute some statistics in different chunks of the scan
             f = performance.parallel_summary_images # function to map
             raster_phase = (RasterCorrection & key).fetch1('raster_phase')
-            fill_fraction = (mesoscan.ScanInfo & key).fetch1('fill_fraction')
+            fill_fraction = (scan.ScanInfo & key).fetch1('fill_fraction')
             y_shifts, x_shifts = (MotionCorrection & key).fetch1('y_shifts', 'x_shifts')
             kwargs = {'raster_phase': raster_phase, 'fill_fraction': fill_fraction,
                       'y_shifts': y_shifts, 'x_shifts': x_shifts}
