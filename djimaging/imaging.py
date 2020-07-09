@@ -1,12 +1,38 @@
 import datajoint as dj
 import scanreader
 
-from . import scope
-from .scope import schema
-from djutils.templates import required
+from djutils.templates import SchemaTemplate, required
+
+schema = SchemaTemplate()
 
 
-# ===================================== Scan =====================================
+# ===================================== Lookup =====================================
+
+@schema
+class Field(dj.Lookup):
+    definition = """ # fields in mesoscope scans
+    field       : tinyint  # 0-based indexing
+    """
+    contents = [[i] for i in range(1, 25)]
+
+
+@schema
+class Channel(dj.Lookup):
+    definition = """  # recording channel
+    channel     : tinyint  # 0-based indexing
+    """
+    contents = [[i] for i in range(1, 5)]
+
+
+@schema
+class Plane(dj.Lookup):
+    definition = """  # recording plane
+    plane     : tinyint  # 0-based indexing
+    """
+    contents = [[i] for i in range(1, 25)]
+
+
+# ===================================== ScanImage's scan =====================================
 
 
 @schema
@@ -61,8 +87,9 @@ class ScanInfo(dj.Imported):
     class Field(dj.Part):
         definition = """ # field-specific scan information
         -> master
-        -> scope.Field
+        -> Field
         ---
+        -> Plane
         px_height           : smallint      # height in pixels
         px_width            : smallint      # width in pixels
         um_height           : float         # height in microns
@@ -119,16 +146,3 @@ class ScanInfo(dj.Imported):
                                 roi=scan.field_rois[field_id][0] if scan.is_multiROI else None)
                            for field_id in range(scan.num_fields)])
 
-
-@schema
-class CorrectionChannel(dj.Manual):
-    definition = """ # channel to use for raster and motion correction
-    -> ScanInfo.Field
-    ---
-    -> scope.Channel
-    """
-
-    def fill(self):
-        single_chn_scans = ScanInfo & 'nchannels = 1'
-        fields = ScanInfo.Field - self & single_chn_scans
-        self.insert(fields.proj(channel='0'))
