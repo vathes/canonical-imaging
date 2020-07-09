@@ -1,5 +1,6 @@
 import datajoint as dj
 import scanreader
+import numpy as np
 
 from djutils.templates import SchemaTemplate, required
 
@@ -26,7 +27,7 @@ class Channel(dj.Lookup):
 
 @schema
 class Plane(dj.Lookup):
-    definition = """  # recording plane
+    definition = """  # recording plane (depth)
     plane     : tinyint  # 0-based indexing
     """
     contents = [[i] for i in range(1, 25)]
@@ -132,16 +133,17 @@ class ScanInfo(dj.Imported):
             self.ROI.insert({**key, 'roi': roi_id} for roi_id in range(scan.num_rois))
 
         # Insert Field(s)
-        x_zero, y_zero, _ = scan.motor_position_at_zero  # motor x, y at ScanImage's 0
+        x_zero, y_zero, z_zero = scan.motor_position_at_zero  # motor x, y, z at ScanImage's 0
         self.Field.insert([dict(key,
                                 field=field_id,
+                                plane=np.where(np.unique(scan.field_depths) == scan.field_depths[field_id])[0][0],
                                 px_height=scan.field_heights[field_id],
                                 px_width=scan.field_widths[field_id],
                                 um_height=scan.field_heights_in_microns[field_id],
                                 um_width=scan.field_widths_in_microns[field_id],
                                 field_x=x_zero + scan._degrees_to_microns(scan.fields[field_id].x),
                                 field_y=y_zero + scan._degrees_to_microns(scan.fields[field_id].y),
-                                field_z=scan.field_depths[field_id],
+                                field_z=z_zero + scan.fields[field_id].depth,
                                 delay_image=scan.field_offsets[field_id],
                                 roi=scan.field_rois[field_id][0] if scan.is_multiROI else None)
                            for field_id in range(scan.num_fields)])
