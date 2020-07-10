@@ -11,26 +11,26 @@ schema = SchemaTemplate()
 
 @schema
 class Field(dj.Lookup):
-    definition = """ # fields in mesoscope scans
+    definition = """ # An imaging field within a scan
     field       : tinyint  # 0-based indexing
     """
-    contents = [[i] for i in range(1, 25)]
+    contents = zip(range(25))
 
 
 @schema
 class Channel(dj.Lookup):
-    definition = """  # recording channel
+    definition = """  # A recording channel
     channel     : tinyint  # 0-based indexing
     """
-    contents = [[i] for i in range(1, 5)]
+    contents = zip(range(5))
 
 
 @schema
 class Plane(dj.Lookup):
-    definition = """  # recording plane (depth)
+    definition = """  # A recording plane (depth)
     plane     : tinyint  # 0-based indexing
     """
-    contents = [[i] for i in range(1, 25)]
+    contents = zip(range(25))
 
 
 # ===================================== ScanImage's scan =====================================

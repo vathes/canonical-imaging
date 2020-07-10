@@ -6,7 +6,7 @@ import sys
 here = path.abspath(path.dirname(__file__))
 
 long_description = """"
-Canonical DataJoint for calcium imaging with CaImAn pipeline for analysis
+Canonical DataJoint pipeline for calcium imaging with CaImAn pipeline for analysis
 """
 
 with open(path.join(here, 'requirements.txt')) as f:

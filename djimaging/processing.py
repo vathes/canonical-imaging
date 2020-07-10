@@ -197,7 +197,7 @@ class DeconvolvedCalciumActivity(dj.Computed):
 
 @schema
 class SpikeActivity(dj.Computed):
-    definition = """  # fluorescence traces before spike extraction or filtering
+    definition = """  # Inferred spiking activity
     -> DeconvolvedCalciumActivity
     """
 
