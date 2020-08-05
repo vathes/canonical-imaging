@@ -1,20 +1,13 @@
 import datajoint as dj
 import scanreader
 import numpy as np
+import pathlib
 
-from djutils.templates import SchemaTemplate, required
+from djutils.templates import required
 
-schema = SchemaTemplate()
-
+from .file import schema, PhysicalFile
 
 # ===================================== Lookup =====================================
-
-@schema
-class Field(dj.Lookup):
-    definition = """ # An imaging field within a scan
-    field       : tinyint  # 0-based indexing
-    """
-    contents = zip(range(25))
 
 
 @schema
@@ -27,7 +20,7 @@ class Channel(dj.Lookup):
 
 @schema
 class Plane(dj.Lookup):
-    definition = """  # A recording plane (depth)
+    definition = """  # A recording plane (scanning depth)
     plane     : tinyint  # 0-based indexing
     """
     contents = zip(range(25))
@@ -39,13 +32,14 @@ class Plane(dj.Lookup):
 @schema
 class Scan(dj.Manual):
 
-    _Session = ...
-    _Equipment = ...    # scanner info, e.g. scope, lens, etc.
+    _Session = ...      # reference to Session
+    _Equipment = ...    # reference to Equipment
 
-    definition = """    #
-    -> self._Session    # API hook point
+    definition = """    
+    -> self._Session    
+    scan_id: int        
     ---
-    -> self._Equipment  # API hook point
+    -> self._Equipment  
     scan_notes='' : varchar(4095)         # free-notes
     """
 
@@ -53,11 +47,11 @@ class Scan(dj.Manual):
 @schema
 class ScanLocation(dj.Manual):
 
-    _Location = ...
+    _Location = ...   # reference to a Location table
 
     definition = """
     -> Scan       
-    -> self._Location            # API hook point
+    -> self._Location      
     """
 
 
@@ -80,7 +74,7 @@ class ScanInfo(dj.Imported):
     """
 
     class ROI(dj.Part):
-        definition = """ Scan's Region of Interest - for Multi-ROI imaging with ScanImage
+        definition = """ # Scan's Region of Interest - for Multi-ROI imaging with ScanImage
         -> master
         roi                 : tinyint       # ROI id
         """
@@ -88,7 +82,7 @@ class ScanInfo(dj.Imported):
     class Field(dj.Part):
         definition = """ # field-specific scan information
         -> master
-        -> Field
+        field_idx           : int
         ---
         -> Plane
         px_height           : smallint      # height in pixels
@@ -102,17 +96,23 @@ class ScanInfo(dj.Imported):
         -> [nullable] ScanInfo.ROI
         """
 
+    class ScanFile(dj.Part):
+        definition = """
+        -> master
+        -> PhysicalFile
+        """
+
     @staticmethod
     @required
     def _get_scan_image_files():
         return None
 
     def make(self, key):
-        """ Read and store some scan parameters."""
+        """ Read and store some scan meta information."""
         # Read the scan
         print('Reading header...')
-        scan_filename = self._get_scan_image_files(key)
-        scan = scanreader.read_scan(scan_filename)
+        scan_filenames = self._get_scan_image_files(key)
+        scan = scanreader.read_scan(scan_filenames)
 
         # Insert in ScanInfo
         self.insert1(dict(key,
@@ -148,3 +148,7 @@ class ScanInfo(dj.Imported):
                                 roi=scan.field_rois[field_id][0] if scan.is_multiROI else None)
                            for field_id in range(scan.num_fields)])
 
+        # Insert file(s)
+        root = pathlib.Path(PhysicalFile._get_root_data_dir())
+        self.ScanFile.insert([{**key, 'file_path': pathlib.Path(f).relative_to(root).as_posix()}
+                              for f in scan_filenames])

@@ -1,9 +1,11 @@
 import datajoint as dj
 import scanreader
 import numpy as np
+import pathlib
+from datetime import datetime
 
-from . import imaging, parameter
-from .imaging import schema
+from .parameter import CaimanParamSet, Suite2pParamSet
+from .imaging import schema, Scan, ScanInfo, Channel, PhysicalFile
 from djutils.templates import required, optional
 
 # ===================================== Lookup =====================================
@@ -12,16 +14,33 @@ from djutils.templates import required, optional
 @schema
 class ProcessingMethod(dj.Lookup):
     definition = """
-    processing_method: varchar(36)
-    ---
-    method_desc: varchar(255)
+    processing_method: char(8)
     """
 
-    class CaImAnParamSet(dj.Part):
+    contents = zip(['suite2p', 'caiman'])
+
+
+@schema
+class ProcessingParamSet(dj.Lookup):
+    definition = """
+    -> ProcessingMethod
+    paramset_idx:  smallint
+    ---
+    paramset_desc: varchar(128)
+    """
+
+    class Caiman(dj.Part):
         definition = """
         -> master
         ---
-        -> parameter.CaImAnParamSet
+        -> CaimanParamSet
+        """
+
+    class Suite2p(dj.Part):
+        definition = """
+        -> master
+        ---
+        -> Suite2pParamSet
         """
 
 
@@ -53,11 +72,10 @@ class RoiType(dj.Lookup):
 @schema
 class ProcessingTask(dj.Manual):
     definition = """
-    -> imaging.Scan
+    -> Scan
     processing_instance: uuid
     ---
-    -> ProcessingMethod
-    process_mode: enum('trigger', 'import')
+    -> ProcessingParamSet
     """
 
 
@@ -69,6 +87,12 @@ class Processing(dj.Computed):
     processing_time: datetime  # time of generation of this set of processed, segmented results
     """
 
+    class ProcessingOutputFile(dj.Part):
+        definition = """
+        -> master
+        -> PhysicalFile
+        """
+
     @staticmethod
     @optional
     def _get_caiman_dir():
@@ -78,6 +102,35 @@ class Processing(dj.Computed):
     @optional
     def _get_suite2p_dir():
         return None
+
+    def make(self, key):
+        # ----
+        # trigger suite2p or caiman here
+        # ----
+
+        method = (ProcessingMethod & key).fetch1('processing_method')
+
+        if method == 'suite2p':
+            data_dir = pathlib.Path(self._get_suite2p_dir(key))
+        elif method == 'caiman':
+            data_dir = pathlib.Path(self._get_caiman_dir(key))
+        else:
+            raise NotImplementedError(f'Unknown method: {method}')
+        
+        if data_dir.exist():
+            key = {**key, 'processing_time': datetime.now()}
+            self.insert1(key)
+            # Insert file(s)
+            root = pathlib.Path(PhysicalFile._get_root_data_dir())
+            files = data_dir.glob('*')
+            self.ScanFile.insert([{**key, 'file_path': pathlib.Path(f).relative_to(root).as_posix()}
+                                  for f in files])
+        else:
+            # output directory does not exist:
+            # 1. trigger processing here (suite2p or caiman)
+            # 2. make some indicator that the processing is ongoing (e.g. is_running.txt)
+            # 3. exit out
+            return
 
 
 # ===================================== Motion Correction =====================================
@@ -101,41 +154,30 @@ class MotionCorrection(dj.Imported):
 class MotionCorrectedImages(dj.Imported):
     definition = """ # summary images for each field and channel after corrections
     -> MotionCorrection
-    -> imaging.ScanInfo.Field
-    -> imaging.Channel
+    -> ScanInfo.Field
+    -> Channel
+    ---
+    average_image                : longblob
+    correlation_image=null       : longblob
     """
 
-    class Average(dj.Part):
-        definition = """ # mean of each pixel across time
-        -> master
-        ---
-        average_image           : longblob
-        """
-
-    class Correlation(dj.Part):
-        definition = """ # average temporal correlation between each pixel and its eight neighbors
-        -> master
-        ---
-        correlation_image           : longblob
-        """
-
-
 # ===================================== Segmentation =====================================
+
 
 @schema
 class Segmentation(dj.Computed):
     definition = """ # Different mask segmentations.
-    -> processing.MotionCorrection        
+    -> MotionCorrection        
     ---
-    -> imaging.Channel.proj(seg_channel='channel')  # channel used for the segmentation
+    -> Channel.proj(seg_channel='channel')  # channel used for the segmentation
     """
 
-    class Roi(dj.Part):
-        definition = """ # Region-of-interest (mask) produced by segmentation.
+    class Mask(dj.Part):
+        definition = """ # A mask produced by segmentation.
         -> master
-        roi                 : smallint
+        mask                 : smallint
         ---
-        -> imaging.ScanInfo.Field           # the field this ROI comes from
+        -> ScanInfo.Field           # the field this ROI comes from
         npix = NULL         : int           # number of pixels in ROIs
         center_x            : int           # center x coordinate in pixels
         center_y            : int           # center y coordinate in pixels
@@ -146,15 +188,15 @@ class Segmentation(dj.Computed):
 
 
 @schema
-class RoiClassification(dj.Computed):
+class MaskClassification(dj.Computed):
     definition = """
     -> Segmentation
     """
 
-    class RoiType(dj.Part):
+    class MaskType(dj.Part):
         definition = """
         -> master
-        -> Segmentation.Roi
+        -> Segmentation.Mask
         ---
         -> RoiType        
         """
@@ -172,8 +214,8 @@ class Fluorescence(dj.Computed):
     class Trace(dj.Part):
         definition = """
         -> master
-        -> Segmentation.Roi
-        -> imaging.Channel.proj(roi_channel='channel')  # the channel that this trace comes from 
+        -> Segmentation.Mask
+        -> Channel.proj(roi_channel='channel')  # the channel that this trace comes from 
         ---
         fluo                : longblob  # Raw fluorescence trace
         neuropil_fluo       : longblob  # Neuropil fluorescence trace
@@ -187,24 +229,9 @@ class DeconvolvedCalciumActivity(dj.Computed):
     """
 
     class DFF(dj.Part):
-        definition = """
+        definition = """  # delta F/F
         -> master
         -> Fluorescence.Trace
         ---
         df_f                : longblob  # delta F/F - deconvolved calcium acitivity 
-        """
-
-
-@schema
-class SpikeActivity(dj.Computed):
-    definition = """  # Inferred spiking activity
-    -> DeconvolvedCalciumActivity
-    """
-
-    class DFF(dj.Part):
-        definition = """
-        -> master
-        -> DeconvolvedCalciumActivity.DFF
-        ---
-        spike                : longblob  # spike train
         """
