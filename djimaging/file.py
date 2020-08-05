@@ -13,5 +13,9 @@ class PhysicalFile(dj.Manual):
 
     @staticmethod
     @required
-    def _get_root_data_dir():
+    def _get_root_data_dir() -> str:
+        """
+        Get the full path for the root data directory (e.g. the mounted drive)
+        :return: a string with full path to the root data directory
+        """
         return None

@@ -95,12 +95,22 @@ class Processing(dj.Computed):
 
     @staticmethod
     @optional
-    def _get_caiman_dir():
+    def _get_caiman_dir(processing_task_key: dict) -> str:
+        """
+        Retrieve the CaImAn output directory for a given ProcessingTask
+        :param processing_task_key: a dictionary of one ProcessingTask
+        :return: a string for full path to the resulting CaImAn output directory
+        """
         return None
 
     @staticmethod
     @optional
-    def _get_suite2p_dir():
+    def _get_suite2p_dir(processing_task_key: dict) -> str:
+        """
+        Retrieve the Suite2p output directory for a given ProcessingTask
+        :param processing_task_key: a dictionary of one ProcessingTask
+        :return: a string for full path to the resulting CaImAn output directory
+        """
         return None
 
     def make(self, key):
@@ -116,7 +126,7 @@ class Processing(dj.Computed):
             data_dir = pathlib.Path(self._get_caiman_dir(key))
         else:
             raise NotImplementedError(f'Unknown method: {method}')
-        
+
         if data_dir.exist():
             key = {**key, 'processing_time': datetime.now()}
             self.insert1(key)

@@ -104,7 +104,12 @@ class ScanInfo(dj.Imported):
 
     @staticmethod
     @required
-    def _get_scan_image_files():
+    def _get_scan_image_files(scan_key: dict) -> list:
+        """
+        Get the list of ScanImage files associated with a given Scan
+        :param scan_key: key of a Scan
+        :return: list of ScanImage files' full file-paths
+        """
         return None
 
     def make(self, key):
