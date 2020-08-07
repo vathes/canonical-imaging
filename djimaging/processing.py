@@ -132,9 +132,9 @@ class Processing(dj.Computed):
             self.insert1(key)
             # Insert file(s)
             root = pathlib.Path(PhysicalFile._get_root_data_dir())
-            files = data_dir.glob('*')
+            files = data_dir.glob('*')  # maybe something more file-specific
             self.ScanFile.insert([{**key, 'file_path': pathlib.Path(f).relative_to(root).as_posix()}
-                                  for f in files])
+                                  for f in files if f.is_file()])
         else:
             # output directory does not exist:
             # 1. trigger processing here (suite2p or caiman)
@@ -150,14 +150,49 @@ class MotionCorrection(dj.Imported):
     definition = """ 
     -> ProcessingTask
     ---
-    motion_template                 : longblob      # image used as alignment template
-    y_shifts                        : longblob      # (pixels) y motion correction shifts
-    x_shifts                        : longblob      # (pixels) x motion correction shifts
-    y_std                           : float         # (pixels) standard deviation of y shifts
-    x_std                           : float         # (pixels) standard deviation of x shifts
-    outlier_frames                  : longblob      # mask with true for frames with outlier shifts (already corrected)
-    align_time=CURRENT_TIMESTAMP    : timestamp     # automatic
+    -> Channel.proj(mc_channel='channel')              # channel used for motion correction in this processing task
     """
+
+    class RigidMotionCorrection(dj.Part):
+        definition = """ 
+        -> master
+        -> ScanInfo.Field
+        ---
+        ref_image                       : longblob      # image used as alignment template
+        outlier_frames                  : longblob      # mask with true for frames with outlier shifts (already corrected)
+        y_shifts                        : longblob      # (pixels) y motion correction shifts
+        x_shifts                        : longblob      # (pixels) x motion correction shifts
+        y_std                           : float         # (pixels) standard deviation of y shifts
+        x_std                           : float         # (pixels) standard deviation of x shifts
+        """
+
+    class NonRigidMotionCorrection(dj.Part):
+        """ Piece-wise rigid motion correction - tile the FOV into multiple 2D blocks/patches"""
+        definition = """ 
+        -> master
+        -> ScanInfo.Field
+        ---
+        ref_image                       : longblob      # image used as alignment template
+        outlier_frames                  : longblob      # mask with true for frames with outlier shifts (already corrected)
+        block_height                    : int           # (px)
+        block_width                     : int           # (px)
+        block_count_y                   : int           # number of blocks tiled in the y direction
+        block_count_x                   : int           # number of blocks tiled in the x direction
+        """
+
+    class Block(dj.Part):
+        definition = """
+        -> master
+        -> master.NonRigidMotionCorrection
+        block_id                        : int
+        ---
+        block_y                         : longblob      # (y_start, y_end) in pixel of this block
+        block_x                         : longblob      # (x_start, x_end) in pixel of this block
+        y_shifts                        : longblob      # (pixels) y motion correction shifts for every frame
+        x_shifts                        : longblob      # (pixels) x motion correction shifts for every frame
+        y_std                           : float         # (pixels) standard deviation of y shifts
+        x_std                           : float         # (pixels) standard deviation of x shifts
+        """
 
 
 @schema
@@ -169,6 +204,7 @@ class MotionCorrectedImages(dj.Imported):
     ---
     average_image                : longblob
     correlation_image=null       : longblob
+    max_proj_image=null          : longblob
     """
 
 # ===================================== Segmentation =====================================
@@ -185,9 +221,9 @@ class Segmentation(dj.Computed):
     class Mask(dj.Part):
         definition = """ # A mask produced by segmentation.
         -> master
-        mask                 : smallint
+        mask                : smallint
         ---
-        -> ScanInfo.Field           # the field this ROI comes from
+        -> ScanInfo.Field                   # the field this ROI comes from
         npix = NULL         : int           # number of pixels in ROIs
         center_x            : int           # center x coordinate in pixels
         center_y            : int           # center y coordinate in pixels
