@@ -82,7 +82,7 @@ class Suite2p:
             if fp.exists():
                 d = np.load(fp)
                 self._iscell = d[:, 0].astype(bool)
-                self._cell_probe = d[:, 1]
+                self._cell_prob = d[:, 1]
         return self._cell_prob
 
     @property
@@ -108,5 +108,35 @@ class Suite2p:
 
     # ---- derived property ----
 
+    @property
+    def ref_image(self):
+        return self.ops['refImg']
+
+    @property
+    def mean_image(self):
+        return self.ops['meanImg']
+
+    @property
+    def max_proj_image(self):
+        return self.ops['max_proj']
+
+    @property
+    def correlation_map(self):
+        return self.ops['Vcorr']
+
+    @property
+    def alignment_channel(self):
+        return self.ops['align_by_chan'] - 1  # suite2p is 1-based, convert to 0-based
+
+    @property
+    def segmentation_channel(self):
+        return self.ops['functional_chan'] - 1  # suite2p is 1-based, convert to 0-based
 
 
+def get_suite2p_outputs(dir):
+    dir = pathlib.Path(dir)
+    ops_filepaths = dir.rglob('*ops.npy')
+
+    s2ps = {ops_fp.parent.name: Suite2p(ops_fp.parent) for ops_fp in ops_filepaths}
+
+    return {k: s2ps[k] for k in sorted(s2ps)}
