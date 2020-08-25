@@ -115,28 +115,35 @@ class Processing(dj.Computed):
         """
         return None
 
+    # Run processing only on Scan with ScanInfo inserted
+    @property
+    def key_source(self):
+        return ProcessingTask & ScanInfo
+
     def make(self, key):
         # ----
         # trigger suite2p or caiman here
         # ----
 
-        method = (ProcessingMethod & key).fetch1('processing_method')
+        method = (ProcessingMethod * ProcessingTask & key).fetch1('processing_method')
 
         if method == 'suite2p':
-            data_dir = pathlib.Path(self._get_suite2p_dir(key))
+            data_dir = pathlib.Path(Processing._get_suite2p_dir(key))
         elif method == 'caiman':
-            data_dir = pathlib.Path(self._get_caiman_dir(key))
+            data_dir = pathlib.Path(Processing._get_caiman_dir(key))
         else:
-            raise NotImplementedError(f'Unknown method: {method}')
+            raise NotImplementedError('Unknown method: {}'.format(method))
 
-        if data_dir.exist():
+        if data_dir.exists():
             key = {**key, 'processing_time': datetime.now()}
             self.insert1(key)
             # Insert file(s)
             root = pathlib.Path(PhysicalFile._get_root_data_dir())
-            files = data_dir.glob('*')  # maybe something more file-specific
-            self.ScanFile.insert([{**key, 'file_path': pathlib.Path(f).relative_to(root).as_posix()}
-                                  for f in files if f.is_file()])
+            files = data_dir.glob('*')  # works for Suite2p, maybe something more file-specific for CaImAn
+            files = [pathlib.Path(f).relative_to(root).as_posix() for f in files if f.is_file()]
+
+            PhysicalFile.insert(zip(files), skip_duplicates=True)
+            self.ProcessingOutputFile.insert([{**key, 'file_path': f}for f in files], ignore_extra_fields=True)
         else:
             # output directory does not exist:
             # 1. trigger processing here (suite2p or caiman)
@@ -184,7 +191,6 @@ class MotionCorrection(dj.Imported):
 
     class Block(dj.Part):
         definition = """  # FOV-tiled blocks used for non-rigid motion correction
-        -> master
         -> master.NonRigidMotionCorrection
         block_id                        : int
         ---
@@ -198,7 +204,7 @@ class MotionCorrection(dj.Imported):
 
     def make(self, key):
 
-        method = (ProcessingMethod & key).fetch1('processing_method')
+        method = (ProcessingMethod * ProcessingTask & key).fetch1('processing_method')
 
         if method == 'suite2p':
             data_dir = pathlib.Path(Processing._get_suite2p_dir(key))
@@ -240,7 +246,7 @@ class MotionCorrection(dj.Imported):
                     self.NonRigidMotionCorrection.insert1({**mc_key, **nonrigid_mc})
                     self.Block.insert(nr_blocks)
         else:
-            raise NotImplementedError(f'Unknown/unimplemented method: {method}')
+            raise NotImplementedError('Unknown/unimplemented method: {}'.format(method))
 
 
 @schema
@@ -258,7 +264,7 @@ class MotionCorrectedImages(dj.Imported):
     key_source = MotionCorrection()
 
     def make(self, key):
-        method = (ProcessingMethod & key).fetch1('processing_method')
+        method = (ProcessingMethod * ProcessingTask & key).fetch1('processing_method')
 
         if method == 'suite2p':
             data_dir = pathlib.Path(Processing._get_suite2p_dir(key))
@@ -275,7 +281,7 @@ class MotionCorrectedImages(dj.Imported):
                             'max_proj_image': s2p.max_proj_image}
                 self.insert1({**mc_key, **img_dict})
         else:
-            raise NotImplementedError(f'Unknown/unimplemented method: {method}')
+            raise NotImplementedError('Unknown/unimplemented method: {}'.format(method))
 
 
 # ===================================== Segmentation =====================================
@@ -305,7 +311,6 @@ class Segmentation(dj.Computed):
 
     class Cell(dj.Part):
         definition = """
-        -> master
         -> master.Mask
         ---
         is_cell: bool
@@ -313,7 +318,7 @@ class Segmentation(dj.Computed):
         """
 
     def make(self, key):
-        method = (ProcessingMethod & key).fetch1('processing_method')
+        method = (ProcessingMethod * ProcessingTask & key).fetch1('processing_method')
 
         if method == 'suite2p':
             data_dir = pathlib.Path(Processing._get_suite2p_dir(key))
@@ -332,7 +337,7 @@ class Segmentation(dj.Computed):
                 mask_count = len(masks)  # increment mask id from all "plane"
                 for mask_idx, (is_cell, cell_prob, mask_stat) in enumerate(zip(s2p.iscell, s2p.cell_prob, s2p.stat)):
                     mask = {**seg_key, 'mask': mask_idx + mask_count,
-                            'is_cell': is_cell, 'cell_prob': cell_prob, 'npix': mask_stat['npix'],
+                            'is_cell': bool(is_cell), 'cell_prob': cell_prob, 'npix': mask_stat['npix'],
                             'center_x':  mask_stat['med'][1], 'center_y':  mask_stat['med'][0],
                             'xpix':  mask_stat['xpix'], 'ypix':  mask_stat['ypix'], 'weights':  mask_stat['lam']}
                     masks.append(mask)
@@ -340,13 +345,21 @@ class Segmentation(dj.Computed):
             self.Mask.insert(masks, ignore_extra_fields=True)
             self.Cell.insert(masks, ignore_extra_fields=True)
         else:
-            raise NotImplementedError(f'Unknown/unimplemented method: {method}')
+            raise NotImplementedError('Unknown/unimplemented method: {}'.format(method))
+
+
+@schema
+class MaskClassificationMethod(dj.Lookup):
+    definition = """
+    mask_classification_method: varchar(16)
+    """
 
 
 @schema
 class MaskClassification(dj.Computed):
     definition = """
     -> Segmentation
+    -> MaskClassificationMethod
     """
 
     class MaskType(dj.Part):
@@ -378,7 +391,7 @@ class Fluorescence(dj.Computed):
         """
 
     def make(self, key):
-        method = (ProcessingMethod & key).fetch1('processing_method')
+        method = (ProcessingMethod * ProcessingTask & key).fetch1('processing_method')
 
         if method == 'suite2p':
             data_dir = pathlib.Path(Processing._get_suite2p_dir(key))
@@ -393,22 +406,30 @@ class Fluorescence(dj.Computed):
                 mask_count = len(fluo_traces)  # increment mask id from all "plane"
                 for mask_idx, (f, fneu) in enumerate(zip(s2p.F, s2p.Fneu)):
                     fluo_traces.append({**key, 'mask': mask_idx + mask_count,
-                                        'channel': 0, 'fluo': f, 'neuropil_fluo': fneu})
-                if s2p.F_chan2:
+                                        'fluo_channel': 0, 'fluo': f, 'neuropil_fluo': fneu})
+                if len(s2p.F_chan2):
                     for mask_idx, (f2, fneu2) in enumerate(zip(s2p.F_chan2, s2p.Fneu_chan2)):
                         fluo_traces.append({**key, 'mask': mask_idx + mask_count,
-                                            'channel': 1, 'fluo': f2, 'neuropil_fluo': fneu2})
+                                            'fluo_channel': 1, 'fluo': f2, 'neuropil_fluo': fneu2})
 
             self.Trace.insert(fluo_traces)
 
         else:
-            raise NotImplementedError(f'Unknown/unimplemented method: {method}')
+            raise NotImplementedError('Unknown/unimplemented method: {}'.format(method))
+
+
+@schema
+class DeconvolutionMethod(dj.Lookup):
+    definition = """
+    deconvolution_method: varchar(16)
+    """
 
 
 @schema
 class DeconvolvedCalciumActivity(dj.Computed):
     definition = """  # fluorescence traces before spike extraction or filtering
     -> Fluorescence
+    -> DeconvolutionMethod
     """
 
     class DFF(dj.Part):

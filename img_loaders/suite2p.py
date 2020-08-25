@@ -24,7 +24,7 @@ class Suite2p:
     def __init__(self, suite2p_dir):
         self.fpath = pathlib.Path(suite2p_dir)
         for s2p_type in _suite2p_ftypes:
-            setattr(self, f'_{s2p_type}', None)
+            setattr(self, '_{}'.format(s2p_type), None)
 
         self._cell_prob = None
 
@@ -118,7 +118,7 @@ class Suite2p:
 
     @property
     def max_proj_image(self):
-        return self.ops['max_proj']
+        return self.ops.get('max_proj', np.full_like(self.mean_image, np.nan))
 
     @property
     def correlation_map(self):

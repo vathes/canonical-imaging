@@ -116,14 +116,14 @@ class ScanInfo(dj.Imported):
         """ Read and store some scan meta information."""
         # Read the scan
         print('Reading header...')
-        scan_filenames = self._get_scan_image_files(key)
+        scan_filenames = ScanInfo._get_scan_image_files(key)
         scan = scanreader.read_scan(scan_filenames)
 
         # Insert in ScanInfo
         self.insert1(dict(key,
                           nfields=scan.num_fields,
-                          nchannels=scan.nchannels,
-                          nframes=scan.nframes,
+                          nchannels=scan.num_channels,
+                          nframes=scan.num_frames,
                           ndepths=scan.num_scanning_depths,
                           x=scan.motor_position_at_zero[0],
                           y=scan.motor_position_at_zero[1],
@@ -139,21 +139,36 @@ class ScanInfo(dj.Imported):
 
         # Insert Field(s)
         x_zero, y_zero, z_zero = scan.motor_position_at_zero  # motor x, y, z at ScanImage's 0
-        self.Field.insert([dict(key,
-                                field=field_id,
-                                plane=np.where(np.unique(scan.field_depths) == scan.field_depths[field_id])[0][0],
-                                px_height=scan.field_heights[field_id],
-                                px_width=scan.field_widths[field_id],
-                                um_height=scan.field_heights_in_microns[field_id],
-                                um_width=scan.field_widths_in_microns[field_id],
-                                field_x=x_zero + scan._degrees_to_microns(scan.fields[field_id].x),
-                                field_y=y_zero + scan._degrees_to_microns(scan.fields[field_id].y),
-                                field_z=z_zero + scan.fields[field_id].depth,
-                                delay_image=scan.field_offsets[field_id],
-                                roi=scan.field_rois[field_id][0] if scan.is_multiROI else None)
-                           for field_id in range(scan.num_fields)])
+        if scan.is_multiROI:
+            self.Field.insert([dict(key,
+                                    field_idx=field_id,
+                                    plane=np.where(np.unique(scan.field_depths) == scan.field_depths[field_id])[0][0],
+                                    px_height=scan.field_heights[field_id],
+                                    px_width=scan.field_widths[field_id],
+                                    um_height=scan.field_heights_in_microns[field_id],
+                                    um_width=scan.field_widths_in_microns[field_id],
+                                    field_x=x_zero + scan._degrees_to_microns(scan.fields[field_id].x),
+                                    field_y=y_zero + scan._degrees_to_microns(scan.fields[field_id].y),
+                                    field_z=z_zero + scan.fields[field_id].depth,
+                                    delay_image=scan.field_offsets[field_id],
+                                    roi=scan.field_rois[field_id][0])
+                               for field_id in range(scan.num_fields)])
+        else:
+            self.Field.insert([dict(key,
+                                    field_idx=plane_idx,
+                                    plane=plane_idx,
+                                    px_height=scan.image_height,
+                                    px_width=scan.image_width,
+                                    um_height=scan.image_height_in_microns,
+                                    um_width=scan.image_width_in_microns,
+                                    field_x=x_zero,
+                                    field_y=y_zero,
+                                    field_z=z_zero + scan.scanning_depths[plane_idx],
+                                    delay_image=scan.field_offsets[plane_idx])
+                               for plane_idx in range(scan.num_scanning_depths)])
 
         # Insert file(s)
         root = pathlib.Path(PhysicalFile._get_root_data_dir())
-        self.ScanFile.insert([{**key, 'file_path': pathlib.Path(f).relative_to(root).as_posix()}
-                              for f in scan_filenames])
+        scan_files = [pathlib.Path(f).relative_to(root).as_posix() for f in scan_filenames]
+        PhysicalFile.insert(zip(scan_files), skip_duplicates=True)
+        self.ScanFile.insert([{**key, 'file_path': f} for f in scan_files])
