@@ -427,7 +427,7 @@ class DeconvolutionMethod(dj.Lookup):
 
 @schema
 class DeconvolvedCalciumActivity(dj.Computed):
-    definition = """  # fluorescence traces before spike extraction or filtering
+    definition = """  # deconvolved calcium acitivity from fluorescence trace
     -> Fluorescence
     -> DeconvolutionMethod
     """
