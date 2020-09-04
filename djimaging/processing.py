@@ -86,7 +86,9 @@ class Processing(dj.Computed):
     definition = """
     -> ProcessingTask
     ---
-    processing_time: datetime  # time of generation of this set of processed, segmented results
+    start_time=null     : datetime  # execution time of this processing task (not available if analysis triggering is not required)
+    completion_time     : datetime  # time of generation of this set of processed, segmented results
+    curation_time=null  : datetime  # time of lastest curation (modification to the file) on this result set
     """
 
     class ProcessingOutputFile(dj.Part):
@@ -129,27 +131,24 @@ class Processing(dj.Computed):
 
         if method == 'suite2p':
             data_dir = pathlib.Path(Processing._get_suite2p_dir(key))
-        elif method == 'caiman':
-            data_dir = pathlib.Path(Processing._get_caiman_dir(key))
+            if data_dir.exists():
+                s2p_loader = suite2p.Suite2p(data_dir)
+                key = {**key, 'completion_time': s2p_loader.creation_time, 'curation_time': s2p_loader.curation_time}
+                self.insert1(key)
+                # Insert file(s)
+                root = pathlib.Path(PhysicalFile._get_root_data_dir())
+                files = data_dir.glob('*')  # works for Suite2p, maybe something more file-specific for CaImAn
+                files = [pathlib.Path(f).relative_to(root).as_posix() for f in files if f.is_file()]
+
+                PhysicalFile.insert(zip(files), skip_duplicates=True)
+                self.ProcessingOutputFile.insert([{**key, 'file_path': f} for f in files], ignore_extra_fields=True)
+            else:
+                start_time = datetime.now()
+                # trigger Suite2p here
+                # wait for completion, then insert with "start_time", "completion_time", no "curation_time"
+                return
         else:
             raise NotImplementedError('Unknown method: {}'.format(method))
-
-        if data_dir.exists():
-            key = {**key, 'processing_time': datetime.now()}
-            self.insert1(key)
-            # Insert file(s)
-            root = pathlib.Path(PhysicalFile._get_root_data_dir())
-            files = data_dir.glob('*')  # works for Suite2p, maybe something more file-specific for CaImAn
-            files = [pathlib.Path(f).relative_to(root).as_posix() for f in files if f.is_file()]
-
-            PhysicalFile.insert(zip(files), skip_duplicates=True)
-            self.ProcessingOutputFile.insert([{**key, 'file_path': f}for f in files], ignore_extra_fields=True)
-        else:
-            # output directory does not exist:
-            # 1. trigger processing here (suite2p or caiman)
-            # 2. make some indicator that the processing is ongoing (e.g. is_running.txt)
-            # 3. exit out
-            return
 
 
 # ===================================== Motion Correction =====================================
@@ -208,16 +207,14 @@ class MotionCorrection(dj.Imported):
 
         if method == 'suite2p':
             data_dir = pathlib.Path(Processing._get_suite2p_dir(key))
-            all_s2ps = suite2p.get_suite2p_outputs(data_dir)
-            all_s2ps.pop('combined', None)  # remove "combined" folder (i.e. multiplane combined option)
+            s2p_loader = suite2p.Suite2p(data_dir)
 
             # ---- build motion correction key
-            align_chn = list(all_s2ps.values())[0].alignment_channel
+            align_chn = s2p_loader.planes[0].alignment_channel
             self.insert1({**key, 'mc_channel': align_chn})
 
             # ---- iterate through all s2p plane outputs ----
-            for plane_str, s2p in all_s2ps.items():
-                plane = int(plane_str.replace('plane', ''))
+            for plane, s2p in s2p_loader.planes.items():
                 mc_key = (ScanInfo.Field * ProcessingTask & key & {'plane': plane}).fetch1('KEY')
 
                 # -- rigid motion correction --
@@ -268,12 +265,10 @@ class MotionCorrectedImages(dj.Imported):
 
         if method == 'suite2p':
             data_dir = pathlib.Path(Processing._get_suite2p_dir(key))
-            all_s2ps = suite2p.get_suite2p_outputs(data_dir)
-            all_s2ps.pop('combined', None)  # remove "combined" folder (i.e. multiplane combined option)
+            s2p_loader = suite2p.Suite2p(data_dir)
 
             # ---- iterate through all s2p plane outputs ----
-            for plane_str, s2p in all_s2ps.items():
-                plane = int(plane_str.replace('plane', ''))
+            for plane, s2p in s2p_loader.items():
                 mc_key = (ScanInfo.Field * ProcessingTask & key & {'plane': plane}).fetch1('KEY')
                 img_dict = {'ref_image': s2p.ref_image,
                             'average_image': s2p.mean_image,
@@ -322,17 +317,15 @@ class Segmentation(dj.Computed):
 
         if method == 'suite2p':
             data_dir = pathlib.Path(Processing._get_suite2p_dir(key))
-            all_s2ps = suite2p.get_suite2p_outputs(data_dir)
-            all_s2ps.pop('combined', None)  # remove "combined" folder (i.e. multiplane combined option)
+            s2p_loader = suite2p.Suite2p(data_dir)
 
             # ---- build segmentation key
-            seg_channel = list(all_s2ps.values())[0].segmentation_channel
+            seg_channel = s2p_loader.planes[0].segmentation_channel
             self.insert1({**key, 'seg_channel': seg_channel})
 
             # ---- iterate through all s2p plane outputs ----
             masks = []
-            for plane_str, s2p in all_s2ps.items():
-                plane = int(plane_str.replace('plane', ''))
+            for plane, s2p in s2p_loader.planes.items():
                 seg_key = (ScanInfo.Field * ProcessingTask & key & {'plane': plane}).fetch1('KEY')
                 mask_count = len(masks)  # increment mask id from all "plane"
                 for mask_idx, (is_cell, cell_prob, mask_stat) in enumerate(zip(s2p.iscell, s2p.cell_prob, s2p.stat)):
@@ -395,14 +388,13 @@ class Fluorescence(dj.Computed):
 
         if method == 'suite2p':
             data_dir = pathlib.Path(Processing._get_suite2p_dir(key))
-            all_s2ps = suite2p.get_suite2p_outputs(data_dir)
-            all_s2ps.pop('combined', None)  # remove "combined" folder (i.e. multiplane combined option)
+            s2p_loader = suite2p.Suite2p(data_dir)
 
             self.insert1(key)
 
             # ---- iterate through all s2p plane outputs ----
             fluo_traces = []
-            for plane_str, s2p in all_s2ps.items():
+            for s2p in s2p_loader.planes.values():
                 mask_count = len(fluo_traces)  # increment mask id from all "plane"
                 for mask_idx, (f, fneu) in enumerate(zip(s2p.F, s2p.Fneu)):
                     fluo_traces.append({**key, 'mask': mask_idx + mask_count,

@@ -1,5 +1,7 @@
 import numpy as np
 import pathlib
+from datetime import datetime
+from collections import OrderedDict
 
 
 _suite2p_ftypes = ('ops', 'Fneu', 'Fneu_chan2', 'F', 'F_chan2', 'iscell', 'spks', 'stat', 'redcell')
@@ -7,7 +9,34 @@ _suite2p_ftypes = ('ops', 'Fneu', 'Fneu_chan2', 'F', 'F_chan2', 'iscell', 'spks'
 
 class Suite2p:
     """
-    Parse the suite2p output directory and load data. Expecting the following files:
+    Wraper class containing all suite2p outputs from one suite2p analysis routine.
+    This includes outputs from the individual plane, with plane indexing starting from 0
+    Plane index of -1 indicates a suite2p "combined" outputs from all planes, thus saved in the "planes_combined" attribute
+    """
+
+    def __init__(self, suite2p_dir):
+        self.suite2p_dir = pathlib.Path(suite2p_dir)
+
+        ops_filepaths = self.suite2p_dir.rglob('*ops.npy')
+
+        self.planes = {}
+        self.planes_combined = None
+        for ops_fp in ops_filepaths:
+            plane_s2p = PlaneSuite2p(ops_fp.parent)
+            if plane_s2p.plane_idx == -1:
+                self.planes_combined = plane_s2p
+            else:
+                self.planes[plane_s2p.plane_idx] = plane_s2p
+        self.planes = OrderedDict({k: self.planes[k] for k in sorted(self.planes)})
+
+        self.creation_time = min([p.creation_time for p in self.planes.values()])  # ealiest file creation time
+        self.curation_time = max([p.curation_time for p in self.planes.values()])  # most recent curation time
+
+
+class PlaneSuite2p:
+    """
+    Parse the suite2p output directory and load data, ***per plane***.
+    Expecting the following files:
     - 'ops':        Options file
     - 'Fneu':       Neuropil traces file for functional channel
     - 'Fneu_chan2': Neuropil traces file for channel 2
@@ -21,12 +50,26 @@ class Suite2p:
     Suite2p output doc: https://suite2p.readthedocs.io/en/latest/outputs.html
     """
 
-    def __init__(self, suite2p_dir):
-        self.fpath = pathlib.Path(suite2p_dir)
+    def __init__(self, suite2p_plane_dir):
+        self.fpath = pathlib.Path(suite2p_plane_dir)
+
+        # ---- Verify dataset exists ----
+        ops_fp = self.fpath / 'ops.npy'
+        if not ops_fp.exists():
+            raise FileNotFoundError('No "ops.npy" found. Invalid suite2p plane folder: {}'.format(self.fpath))
+        self.creation_time = datetime.fromtimestamp(ops_fp.stat().st_ctime)
+
+        iscell_fp = self.fpath / 'iscell.npy'
+        if not iscell_fp.exists():
+            raise FileNotFoundError('No "iscell.npy" found. Invalid suite2p plane folder: {}'.format(self.fpath))
+        self.curation_time = datetime.fromtimestamp(iscell_fp.stat().st_ctime)
+
+        # ---- Initialize attributes ----
         for s2p_type in _suite2p_ftypes:
             setattr(self, '_{}'.format(s2p_type), None)
-
         self._cell_prob = None
+
+        self.plane_idx = -1 if self.fpath.name == 'combined' else int(self.fpath.name.replace('plane', ''))
 
     # ---- load core files ----
 
@@ -34,7 +77,7 @@ class Suite2p:
     def ops(self):
         if self._ops is None:
             fp = self.fpath / 'ops.npy'
-            self._ops = np.load(fp, allow_pickle=True).item() if fp.exists() else {}
+            self._ops = np.load(fp, allow_pickle=True).item()
         return self._ops
 
     @property
@@ -69,10 +112,9 @@ class Suite2p:
     def iscell(self):
         if self._iscell is None:
             fp = self.fpath / 'iscell.npy'
-            if fp.exists():
-                d = np.load(fp)
-                self._iscell = d[:, 0].astype(bool)
-                self._cell_probe = d[:, 1]
+            d = np.load(fp)
+            self._iscell = d[:, 0].astype(bool)
+            self._cell_probe = d[:, 1]
         return self._iscell
 
     @property
@@ -131,12 +173,3 @@ class Suite2p:
     @property
     def segmentation_channel(self):
         return self.ops['functional_chan'] - 1  # suite2p is 1-based, convert to 0-based
-
-
-def get_suite2p_outputs(dir):
-    dir = pathlib.Path(dir)
-    ops_filepaths = dir.rglob('*ops.npy')
-
-    s2ps = {ops_fp.parent.name: Suite2p(ops_fp.parent) for ops_fp in ops_filepaths}
-
-    return {k: s2ps[k] for k in sorted(s2ps)}
