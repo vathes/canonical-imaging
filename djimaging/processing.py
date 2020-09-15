@@ -324,7 +324,7 @@ class Segmentation(dj.Computed):
 @schema
 class MaskClassificationMethod(dj.Lookup):
     definition = """
-    mask_classification_method: varchar(16)
+    mask_classification_method: varchar(32)
     """
 
     contents = zip(['suite2p_default_classifier'])
