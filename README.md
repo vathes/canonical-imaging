@@ -46,7 +46,7 @@ whereas each ROI may consist of multiple ***ScanInfo.Field***, one from each dep
 
 + ***MotionCorrection.NonRigidMotionCorrection*** and ***MotionCorrection.Block*** tables are used to describe the non-rigid motion correction performed on each ***ScanInfo.Field***
 
-+ ***MotionCorrectedImages*** - summary images for each ***ScanInfo.Field*** after motion correction (e.g. average image, correlation image)
++ ***MotionCorrection.Summary*** - summary images for each ***ScanInfo.Field*** after motion correction (e.g. average image, correlation image)
     
 ### Preprocessing - Segmentation
 
@@ -54,17 +54,15 @@ whereas each ROI may consist of multiple ***ScanInfo.Field***, one from each dep
  
 + ***Segmentation.Mask*** - image mask for the segmented region of interest from a particular ***ScanInfo.Field***
 
-+ ***Segmentation.Cell*** - depicts whether a mask is deemed as a cell (at some probability)
-
-+ ***MaskClassification*** - classification of ***Segmentation.Cell*** into different type (e.g. soma, axon, dendrite, artifact, etc.)
++ ***MaskClassification*** - classification of ***Segmentation.Mask*** into different type (e.g. soma, axon, dendrite, artifact, etc.)
 
 ### Neural activity 
 
-+ ***Fluorescence*** - fluorescence traces extracted from each ***Segmentation.Cell***
++ ***Fluorescence*** - fluorescence traces extracted from each ***Segmentation.Mask***
 
-+ ***DeconvolutionMethod*** - deconvolution method to be applied on fluorescence trace
++ ***ActivityExtractionMethod*** - activity extraction method (e.g. deconvolution) to be applied on fluorescence trace
 
-+ ***DeconvolvedCalciumActivity*** - deconvolved calcium acitivity from fluorescence trace
++ ***Activity*** - computed neuronal activity trace from fluorescence trace (e.g. spikes)
 
 ## Usage
 
