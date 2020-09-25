@@ -72,8 +72,8 @@ class ScanInfo(dj.Imported):
         ---
         px_height           : smallint      # height in pixels
         px_width            : smallint      # width in pixels
-        um_height           : float         # height in microns
-        um_width            : float         # width in microns
+        um_height=null      : float         # height in microns
+        um_width=null       : float         # width in microns
         field_x             : float         # (um) center of field in the motor coordinate system
         field_y             : float         # (um) center of field in the motor coordinate system
         field_z             : float         # (um) relative depth of field
@@ -136,8 +136,8 @@ class ScanInfo(dj.Imported):
                                     field_idx=plane_idx,
                                     px_height=scan.image_height,
                                     px_width=scan.image_width,
-                                    um_height=scan.image_height_in_microns,
-                                    um_width=scan.image_width_in_microns,
+                                    um_height=getattr(scan, 'image_height_in_microns', None),
+                                    um_width=getattr(scan, 'image_width_in_microns', None),
                                     field_x=x_zero,
                                     field_y=y_zero,
                                     field_z=z_zero + scan.scanning_depths[plane_idx],
