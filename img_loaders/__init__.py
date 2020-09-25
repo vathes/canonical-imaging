@@ -9,7 +9,8 @@ def parse_scanimage_header(scan):
     for item in scan.header.split('\n'):
         try:
             key, value = item.split(' = ')
-            header[key.replace('.', '_')] = value
+            key = re.sub('^scanimage_', '', key.replace('.', '_'))
+            header[key] = value
         except:
             pass
     return header

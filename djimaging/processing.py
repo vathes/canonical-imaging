@@ -420,7 +420,7 @@ class Activity(dj.Computed):
     """
 
     class Trace(dj.Part):
-        definition = """  # delta F/F
+        definition = """  #
         -> master
         -> Fluorescence.Trace
         ---
