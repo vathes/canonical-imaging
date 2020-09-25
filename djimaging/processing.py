@@ -408,8 +408,10 @@ class Fluorescence(dj.Computed):
 @schema
 class ActivityExtractionMethod(dj.Lookup):
     definition = """
-    extraction_method: varchar(16)
+    extraction_method: varchar(32)
     """
+
+    contents = zip(['suite2p_deconvolution'])
 
 
 @schema
@@ -426,3 +428,27 @@ class Activity(dj.Computed):
         ---
         activity_trace                : longblob  # 
         """
+
+    def make(self, key):
+
+        method = (ProcessingParamSet * ProcessingTask & key).fetch1('processing_method')
+
+        if method == 'suite2p' and key['extraction_method'] == 'suite2p_deconvolution':
+            data_dir = pathlib.Path(Processing._get_suite2p_dir(key))
+            s2p_loader = suite2p.Suite2p(data_dir)
+
+            self.insert1(key)
+
+            # ---- iterate through all s2p plane outputs ----
+            spikes = []
+            for s2p in s2p_loader.planes.values():
+                mask_count = len(spikes)  # increment mask id from all "plane"
+                for mask_idx, spks in enumerate(s2p.spks):
+                    spikes.append({**key, 'mask': mask_idx + mask_count,
+                                   'fluo_channel': 0,
+                                   'activity_trace': spks})
+
+            self.Trace.insert(spikes)
+
+        else:
+            raise NotImplementedError('Unknown/unimplemented method: {}'.format(method))
