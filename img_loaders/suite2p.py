@@ -114,7 +114,7 @@ class PlaneSuite2p:
             fp = self.fpath / 'iscell.npy'
             d = np.load(fp)
             self._iscell = d[:, 0].astype(bool)
-            self._cell_probe = d[:, 1]
+            self._cell_prob = d[:, 1]
         return self._iscell
 
     @property
@@ -148,7 +148,7 @@ class PlaneSuite2p:
             self._redcell = np.load(fp) if fp.exists() else []
         return self._redcell
 
-    # ---- derived property ----
+    # ---- image property ----
 
     @property
     def ref_image(self):
