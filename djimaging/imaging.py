@@ -18,14 +18,6 @@ class Channel(dj.Lookup):
     contents = zip(range(5))
 
 
-@schema
-class Plane(dj.Lookup):
-    definition = """  # A recording plane (scanning depth)
-    plane     : tinyint  # 0-based indexing
-    """
-    contents = zip(range(25))
-
-
 # ===================================== ScanImage's scan =====================================
 
 
@@ -73,27 +65,19 @@ class ScanInfo(dj.Imported):
     fill_fraction           : float             # raster scan temporal fill fraction (see scanimage)
     """
 
-    class ROI(dj.Part):
-        definition = """ # Scan's Region of Interest - for Multi-ROI imaging with ScanImage
-        -> master
-        roi                 : tinyint       # ROI id
-        """
-
     class Field(dj.Part):
         definition = """ # field-specific scan information
         -> master
         field_idx           : int
         ---
-        -> Plane
         px_height           : smallint      # height in pixels
         px_width            : smallint      # width in pixels
-        um_height           : float         # height in microns
-        um_width            : float         # width in microns
+        um_height=null      : float         # height in microns
+        um_width=null       : float         # width in microns
         field_x             : float         # (um) center of field in the motor coordinate system
         field_y             : float         # (um) center of field in the motor coordinate system
         field_z             : float         # (um) relative depth of field
         delay_image         : longblob      # (ms) delay between the start of the scan and pixels in this field
-        -> [nullable] ScanInfo.ROI
         """
 
     class ScanFile(dj.Part):
@@ -133,16 +117,11 @@ class ScanInfo(dj.Imported):
                           fill_fraction=scan.temporal_fill_fraction,
                           nrois=scan.num_rois if scan.is_multiROI else 0))
 
-        # Insert ROI(s)
-        if scan.is_multiROI:
-            self.ROI.insert({**key, 'roi': roi_id} for roi_id in range(scan.num_rois))
-
         # Insert Field(s)
         x_zero, y_zero, z_zero = scan.motor_position_at_zero  # motor x, y, z at ScanImage's 0
         if scan.is_multiROI:
             self.Field.insert([dict(key,
                                     field_idx=field_id,
-                                    plane=np.where(np.unique(scan.field_depths) == scan.field_depths[field_id])[0][0],
                                     px_height=scan.field_heights[field_id],
                                     px_width=scan.field_widths[field_id],
                                     um_height=scan.field_heights_in_microns[field_id],
@@ -150,17 +129,15 @@ class ScanInfo(dj.Imported):
                                     field_x=x_zero + scan._degrees_to_microns(scan.fields[field_id].x),
                                     field_y=y_zero + scan._degrees_to_microns(scan.fields[field_id].y),
                                     field_z=z_zero + scan.fields[field_id].depth,
-                                    delay_image=scan.field_offsets[field_id],
-                                    roi=scan.field_rois[field_id][0])
+                                    delay_image=scan.field_offsets[field_id])
                                for field_id in range(scan.num_fields)])
         else:
             self.Field.insert([dict(key,
                                     field_idx=plane_idx,
-                                    plane=plane_idx,
                                     px_height=scan.image_height,
                                     px_width=scan.image_width,
-                                    um_height=scan.image_height_in_microns,
-                                    um_width=scan.image_width_in_microns,
+                                    um_height=getattr(scan, 'image_height_in_microns', None),
+                                    um_width=getattr(scan, 'image_width_in_microns', None),
                                     field_x=x_zero,
                                     field_y=y_zero,
                                     field_z=z_zero + scan.scanning_depths[plane_idx],
