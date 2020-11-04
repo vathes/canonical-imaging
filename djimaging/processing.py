@@ -115,7 +115,7 @@ class Processing(dj.Computed):
         """
         Retrieve the Suite2p output directory for a given ProcessingTask
         :param processing_task_key: a dictionary of one ProcessingTask
-        :return: a string for full path to the resulting CaImAn output directory
+        :return: a string for full path to the resulting Suite2p output directory
         """
         return None
 
@@ -411,12 +411,12 @@ class ActivityExtractionMethod(dj.Lookup):
     extraction_method: varchar(32)
     """
 
-    contents = zip(['suite2p_deconvolution'])
+    contents = zip(['suite2p_deconvolution', 'caiman_deconvolution', 'caiman_dff'])
 
 
 @schema
 class Activity(dj.Computed):
-    definition = """  # deconvolved calcium acitivity from fluorescence trace
+    definition = """  # inferred neural activity from fluorescence trace - e.g. dff, spikes
     -> Fluorescence
     -> ActivityExtractionMethod
     """
@@ -426,29 +426,29 @@ class Activity(dj.Computed):
         -> master
         -> Fluorescence.Trace
         ---
-        activity_trace                : longblob  # 
+        activity_trace: longblob  # 
         """
 
     def make(self, key):
 
         method = (ProcessingParamSet * ProcessingTask & key).fetch1('processing_method')
 
-        if method == 'suite2p' and key['extraction_method'] == 'suite2p_deconvolution':
-            data_dir = pathlib.Path(Processing._get_suite2p_dir(key))
-            s2p_loader = suite2p.Suite2p(data_dir)
+        if method == 'suite2p':
+            if key['extraction_method'] == 'suite2p_deconvolution':
+                data_dir = pathlib.Path(Processing._get_suite2p_dir(key))
+                s2p_loader = suite2p.Suite2p(data_dir)
 
-            self.insert1(key)
+                self.insert1(key)
 
-            # ---- iterate through all s2p plane outputs ----
-            spikes = []
-            for s2p in s2p_loader.planes.values():
-                mask_count = len(spikes)  # increment mask id from all "plane"
-                for mask_idx, spks in enumerate(s2p.spks):
-                    spikes.append({**key, 'mask': mask_idx + mask_count,
-                                   'fluo_channel': 0,
-                                   'activity_trace': spks})
+                # ---- iterate through all s2p plane outputs ----
+                spikes = []
+                for s2p in s2p_loader.planes.values():
+                    mask_count = len(spikes)  # increment mask id from all "plane"
+                    for mask_idx, spks in enumerate(s2p.spks):
+                        spikes.append({**key, 'mask': mask_idx + mask_count,
+                                       'fluo_channel': 0,
+                                       'activity_trace': spks})
 
-            self.Trace.insert(spikes)
-
+                self.Trace.insert(spikes)
         else:
             raise NotImplementedError('Unknown/unimplemented method: {}'.format(method))
