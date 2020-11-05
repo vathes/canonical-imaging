@@ -27,10 +27,7 @@ class CaImAn:
             h5f_automated = h5py.File(caiman_filepath_automated, 'r')
             h5f_manual = h5py.File(caiman_filepath_manual, 'r')
 
-            if '/mc/shifts_rig' not in h5f_manual and ...
-                '/mc/x_shifts_els' not in h5f_manual and ...
-                '/mc/y_shifts_els' not in h5f_manual and ...
-                '/cnmf/correlation_image' not in h5f_manual:
+            if not any(s in h5f_manual for s in ('/mc/shifts_rig', '/mc/x_shifts_els', '/mc/y_shifts_els', '/cnmf/correlation_image')):
                 raise FileNotFoundError('Rigid or non rigid shifts or correlation image not found in CaImAn file: {}'.format(caiman_filepath_manual))
 
             # ---- Declare attributes ----

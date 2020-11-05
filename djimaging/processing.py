@@ -297,13 +297,13 @@ class MotionCorrection(dj.Imported):
                                 # block vs patch naming
                 b_id=0
                 nr_blocks=[]
-                for j in range(len(caiman_loader.y_shifts_els[:,0])):
-                    for i in range(len(caiman_loader.x_shifts_els[:,0])):
-                        nr_blocks.append({**mc_key, 'block_id': b_id,
-                                        'block_y': b_y, 'block_x': b_x, # block_y - (y_start, y_end) in pixel of this block, be careful with order/position
-                                        'y_shifts': caiman_loader.y_shifts_els[:,j], 'x_shifts': caiman_loader.x_shifts_els[:,i],
-                                        'y_std': np.nanstd(caiman_loader.y_shifts_els[:,j]), 'x_std': np.nanstd(caiman_loader.x_shifts_els[:,i])}) # std frames
-                        b_id+=1
+                # implement this loop as a list comprehension. i and j are not necessary. Use y_shifts_els and x_shift_els as iterators.
+                nr_blocks   =   [({**mc_key, 'block_id': b_id,
+                                'block_y': b_y, 'block_x': b_x, # block_y - (y_start, y_end) in pixel of this block, be careful with order/position
+                                'y_shifts': caiman_loader.y_shifts_els[:,j], 'x_shifts': caiman_loader.x_shifts_els[:,i],
+                                'y_std': np.nanstd(caiman_loader.y_shifts_els[:,j]), 'x_std': np.nanstd(caiman_loader.x_shifts_els[:,i])...# std frames
+                                } for j in range(len(caiman_loader.y_shifts_els[0,:])))...
+                                 for i in range(len(caiman_loader.x_shifts_els[0,:])) b_id+=1]        
 
                 self.NonRigidMotionCorrection.insert1({**mc_key, **nonrigid_mc})
                 self.Block.insert(nr_blocks)
