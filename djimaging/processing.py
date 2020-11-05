@@ -115,7 +115,7 @@ class Processing(dj.Computed):
         """
         Retrieve the Suite2p output directory for a given ProcessingTask
         :param processing_task_key: a dictionary of one ProcessingTask
-        :return: a string for full path to the resulting CaImAn output directory
+        :return: a string for full path to the resulting Suite2p output directory
         """
         return None
 
@@ -267,6 +267,54 @@ class MotionCorrection(dj.Imported):
                             'max_proj_image': s2p.max_proj_image}
                 self.Summary.insert1({**mc_key, **img_dict})
 
+        elif method == 'caiman':
+            data_dir = pathlib.Path(Processing._get_caiman_dir(key))
+            caiman_loader = caiman.CaImAn(data_dir)
+
+            # align_chn = s2p_loader.planes[0].alignment_channel # where is it specified that 0 is structural and vice versa
+            # self.insert1({**key, 'mc_channel': align_chn})
+
+            mc_key = (ScanInfo.Field * ProcessingTask & key).fetch1('KEY')
+
+            # -- rigid motion correction --
+            if not caiman_loader.params['motion']['pw_rigid'][...]:
+
+                rigid_mc = {'y_shifts': caiman_loader.shifts_rig[1,:],
+                            'x_shifts': caiman_loader.shifts_rig[0,:],
+                            'y_std': np.nanstd(caiman_loader.shifts_rig[1,:]), # std frames
+                            'x_std': np.nanstd(caiman_loader.shifts_rig[0,:]),
+                            'outlier_frames': }# ?
+
+                self.RigidMotionCorrection.insert1({**mc_key, **rigid_mc})
+
+            # -- non-rigid motion correction --
+            elif caiman_loader.params['motion']['pw_rigid'][...]:
+                nonrigid_mc = {'block_height': caiman_loader.params['motion']['strides'][...][0]+caiman_loader.params['motion']['overlaps'][...][0],
+                                'block_width': caiman_loader.params['motion']['strides'][...][1]+caiman_loader.params['motion']['overlaps'][...][1],
+                                'block_count_y': ,# number of blocks tiled - round down and cut off last stride
+                                'block_count_x': ,# number of blocks tiled
+                                'outlier_frames': }# mask with true for frames with outlier shifts (already corrected)
+                                # block vs patch naming
+                b_id=0
+                nr_blocks=[]
+                # implement this loop as a list comprehension. i and j are not necessary. Use y_shifts_els and x_shift_els as iterators.
+                nr_blocks   =   [({**mc_key, 'block_id': b_id,
+                                'block_y': b_y, 'block_x': b_x, # block_y - (y_start, y_end) in pixel of this block, be careful with order/position
+                                'y_shifts': caiman_loader.y_shifts_els[:,j], 'x_shifts': caiman_loader.x_shifts_els[:,i],
+                                'y_std': np.nanstd(caiman_loader.y_shifts_els[:,j]), 'x_std': np.nanstd(caiman_loader.x_shifts_els[:,i])...# std frames
+                                } for j in range(len(caiman_loader.y_shifts_els[0,:])))...
+                                 for i in range(len(caiman_loader.x_shifts_els[0,:])) b_id+=1]        
+
+                self.NonRigidMotionCorrection.insert1({**mc_key, **nonrigid_mc})
+                self.Block.insert(nr_blocks)
+
+            # -- summary images --
+            img_dict = {'ref_image': , # make nullable ?
+                        'average_image': , # calculate for caiman?
+                        'correlation_image': caiman_loader.correlation_image,
+                        'max_proj_image': }
+            self.Summary.insert1({**mc_key, **img_dict})
+
         else:
             raise NotImplementedError('Unknown/unimplemented method: {}'.format(method))
 
@@ -326,6 +374,43 @@ class Segmentation(dj.Computed):
             if cells:
                 MaskClassification.insert1({**key, 'mask_classification_method': 'suite2p_default_classifier'}, allow_direct_insert=True)
                 MaskClassification.MaskType.insert(cells, ignore_extra_fields=True, allow_direct_insert=True)
+        
+        elif method == 'caiman':
+            data_dir = pathlib.Path(Processing._get_caiman_dir(key))
+            caiman_loader = caiman.CaImAn(data_dir)
+
+            field_keys = (ScanInfo.Field & key).fetch('KEY')
+
+            masks, cells = [], []
+            seg_key = (ScanInfo.Field * ProcessingTask & key).fetch1('KEY')
+            for mask_idx, (is_cell, cell_prob, mask_stat) in enumerate(zip(s2p.iscell, s2p.cell_prob, s2p.stat)):
+                masks.append({**seg_key, 'mask': mask_idx, 
+                                'seg_channel': ,
+                                'mask_npix': ,#sparse array conversion
+                                'mask_center_x': ,
+                                'mask_center_y': ,
+                                'mask_xpix': ,
+                                'mask_ypix': ,
+                                'mask_weights': })
+                if is_cell:
+                    cells.append({**seg_key, 'mask_classification_method': 'suite2p_default_classifier',
+                                    'mask': mask_idx, 'mask_type': 'soma', 'confidence': cell_prob})
+
+# cnm.estimates.plot_contours_nb(img=Cn, idx=cnm.estimates.idx_components)
+# mask_npix     # number of pixels in ROIs
+# mask_center_x # center x coordinate in pixels
+# mask_center_y # center y coordinate in pixels
+# mask_xpix     # x coordinates in pixels
+# mask_ypix     # y coordinates in pixels        
+# mask_weights  # weights of the mask at the indices above in column major (Fortran) order
+
+            self.insert1(key)
+            self.Mask.insert(masks, ignore_extra_fields=True)
+
+            if cells:
+                MaskClassification.insert1({**key, 'mask_classification_method': 'suite2p_default_classifier'}, allow_direct_insert=True)
+                MaskClassification.MaskType.insert(cells, ignore_extra_fields=True, allow_direct_insert=True)
+
         else:
             raise NotImplementedError('Unknown/unimplemented method: {}'.format(method))
 
@@ -401,6 +486,19 @@ class Fluorescence(dj.Computed):
 
             self.Trace.insert(fluo_traces + fluo_chn2_traces)
 
+        elif method == 'caiman':
+            data_dir = pathlib.Path(Processing._get_caiman_dir(key))
+            caiman_loader = caiman.CaImAn(data_dir)
+
+            self.insert1(key)   # ?
+
+            fluo_traces = []
+            for mask_idx in range(len(caiman_loader.estimates['C'][...][0,:])):
+                fluo_traces.append({**key, 'mask': mask_idx,
+                                    'fluo_channel': 0,
+                                    'fluorescence': caiman_loader.estimates['C'][...][:,mask_idx]})
+
+            self.Trace.insert(fluo_traces)
         else:
             raise NotImplementedError('Unknown/unimplemented method: {}'.format(method))
 
@@ -416,7 +514,7 @@ class ActivityExtractionMethod(dj.Lookup):
 
 @schema
 class Activity(dj.Computed):
-    definition = """  # deconvolved calcium acitivity from fluorescence trace
+    definition = """  # deconvolved calcium activity from fluorescence trace
     -> Fluorescence
     -> ActivityExtractionMethod
     """
@@ -448,6 +546,19 @@ class Activity(dj.Computed):
                                    'fluo_channel': 0,
                                    'activity_trace': spks})
 
+            self.Trace.insert(spikes)
+
+        elif method == 'caiman':
+            data_dir = pathlib.Path(Processing._get_caiman_dir(key))
+            caiman_loader = caiman.CaImAn(data_dir)
+
+            self.insert1(key)# ?
+
+            spikes = []
+            for mask_idx in range(len(caiman_loader.estimates['S'][...][0,:])):
+                spikes.append({**key, 'mask': mask_idx,
+                                'fluo_channel': 0,
+                                'activity_trace': caiman_loader.estimates['S'][...][:,mask_idx]})
             self.Trace.insert(spikes)
 
         else:
