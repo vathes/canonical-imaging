@@ -10,7 +10,7 @@ from .utils import dict_to_hash
 
 from djutils.templates import required, optional
 
-from img_loaders import suite2p
+from img_loaders import suite2p, caiman
 
 # ===================================== Lookup =====================================
 
@@ -80,6 +80,8 @@ class ProcessingTask(dj.Manual):
     definition = """
     -> Scan
     -> ProcessingParamSet
+    ---
+    task_mode='load': enum('load', 'trigger')  # 'load': load computed analysis results, 'trigger': trigger computation
     """
 
 
@@ -125,35 +127,47 @@ class Processing(dj.Computed):
         return ProcessingTask & ScanInfo
 
     def make(self, key):
-        # ----
-        # trigger suite2p or caiman here
-        # ----
+        method, task_mode = (ProcessingParamSet * ProcessingTask & key).fetch1('processing_method', 'task_mode')
 
-        method = (ProcessingParamSet * ProcessingTask & key).fetch1('processing_method')
+        if task_mode == 'load':
+            if method == 'suite2p':
+                if (ScanInfo & key).fetch1('nrois') > 0:
+                    raise NotImplementedError(f'Suite2p ingestion error - Unable to handle ScanImage multi-ROI scanning mode yet')
 
-        if method == 'suite2p':
-            if (ScanInfo & key).fetch1('nrois') > 0:
-                raise NotImplementedError(f'Suite2p ingestion error - Unable to handle ScanImage multi-ROI scanning mode yet')
-
-            data_dir = pathlib.Path(Processing._get_suite2p_dir(key))
-            if data_dir.exists():
+                data_dir = pathlib.Path(Processing._get_suite2p_dir(key))
                 s2p_loader = suite2p.Suite2p(data_dir)
                 key = {**key, 'proc_completion_time': s2p_loader.creation_time, 'proc_curation_time': s2p_loader.curation_time}
-                self.insert1(key)
                 # Insert file(s)
                 root = pathlib.Path(PhysicalFile._get_root_data_dir())
-                files = data_dir.glob('*')  # works for Suite2p, maybe something more file-specific for CaImAn
-                files = [pathlib.Path(f).relative_to(root).as_posix() for f in files if f.is_file()]
+                output_files = data_dir.glob('*')  # works for Suite2p, maybe something more file-specific for CaImAn
+                output_files = [pathlib.Path(f).relative_to(root).as_posix() for f in output_files if f.is_file()]
 
-                PhysicalFile.insert(zip(files), skip_duplicates=True)
-                self.ProcessingOutputFile.insert([{**key, 'file_path': f} for f in files], ignore_extra_fields=True)
+            elif method == 'caiman':
+                if (ScanInfo & key).fetch1('nrois') > 0:
+                    raise NotImplementedError(
+                        f'Suite2p ingestion error - Unable to handle ScanImage multi-ROI scanning mode yet')
+
+                data_dir = pathlib.Path(Processing._get_caiman_dir(key))
+                caiman_loader = caiman.CaImAn(data_dir)
+                key = {**key, 'proc_completion_time': caiman_loader.creation_time,
+                       'proc_curation_time': caiman_loader.curation_time}
+                # Insert file(s)
+                root = pathlib.Path(PhysicalFile._get_root_data_dir())
+                output_files = data_dir.glob('*')
+                output_files = [pathlib.Path(f).relative_to(root).as_posix() for f in output_files if f.is_file()]
+
             else:
-                start_time = datetime.now()
-                # trigger Suite2p here
-                # wait for completion, then insert with "completion_time", "start_time", no "curation_time"
-                return
-        else:
-            raise NotImplementedError('Unknown method: {}'.format(method))
+                raise NotImplementedError('Unknown method: {}'.format(method))
+
+            self.insert1(key)
+            PhysicalFile.insert(zip(output_files), skip_duplicates=True)
+            self.ProcessingOutputFile.insert([{**key, 'file_path': f} for f in output_files], ignore_extra_fields=True)
+
+        elif task_mode == 'trigger':
+            start_time = datetime.now()
+            # trigger Suite2p or CaImAn here
+            # wait for completion, then insert with "completion_time", "start_time", no "curation_time"
+            return
 
 
 # ===================================== Motion Correction =====================================
@@ -283,7 +297,7 @@ class MotionCorrection(dj.Imported):
                             'x_shifts': caiman_loader.shifts_rig[0,:],
                             'y_std': np.nanstd(caiman_loader.shifts_rig[1,:]), # std frames
                             'x_std': np.nanstd(caiman_loader.shifts_rig[0,:]),
-                            'outlier_frames': }# ?
+                            'outlier_frames': None} # ?
 
                 self.RigidMotionCorrection.insert1({**mc_key, **rigid_mc})
 
@@ -291,28 +305,28 @@ class MotionCorrection(dj.Imported):
             elif caiman_loader.params['motion']['pw_rigid'][...]:
                 nonrigid_mc = {'block_height': caiman_loader.params['motion']['strides'][...][0]+caiman_loader.params['motion']['overlaps'][...][0],
                                 'block_width': caiman_loader.params['motion']['strides'][...][1]+caiman_loader.params['motion']['overlaps'][...][1],
-                                'block_count_y': ,# number of blocks tiled - round down and cut off last stride
-                                'block_count_x': ,# number of blocks tiled
-                                'outlier_frames': }# mask with true for frames with outlier shifts (already corrected)
+                                'block_count_y': None,# number of blocks tiled - round down and cut off last stride
+                                'block_count_x': None,# number of blocks tiled
+                                'outlier_frames': None}# mask with true for frames with outlier shifts (already corrected)
                                 # block vs patch naming
                 b_id=0
                 nr_blocks=[]
                 # implement this loop as a list comprehension. i and j are not necessary. Use y_shifts_els and x_shift_els as iterators.
-                nr_blocks   =   [({**mc_key, 'block_id': b_id,
-                                'block_y': b_y, 'block_x': b_x, # block_y - (y_start, y_end) in pixel of this block, be careful with order/position
-                                'y_shifts': caiman_loader.y_shifts_els[:,j], 'x_shifts': caiman_loader.x_shifts_els[:,i],
-                                'y_std': np.nanstd(caiman_loader.y_shifts_els[:,j]), 'x_std': np.nanstd(caiman_loader.x_shifts_els[:,i])...# std frames
-                                } for j in range(len(caiman_loader.y_shifts_els[0,:])))...
-                                 for i in range(len(caiman_loader.x_shifts_els[0,:])) b_id+=1]        
+                # nr_blocks   =   [({**mc_key, 'block_id': b_id,
+                #                 'block_y': b_y, 'block_x': b_x, # block_y - (y_start, y_end) in pixel of this block, be careful with order/position
+                #                 'y_shifts': caiman_loader.y_shifts_els[:,j], 'x_shifts': caiman_loader.x_shifts_els[:,i],
+                #                 'y_std': np.nanstd(caiman_loader.y_shifts_els[:,j]), 'x_std': np.nanstd(caiman_loader.x_shifts_els[:,i])...# std frames
+                #                 } for j in range(len(caiman_loader.y_shifts_els[0,:])))
+                #                  for i in range(len(caiman_loader.x_shifts_els[0,:])) b_id+=1]
 
                 self.NonRigidMotionCorrection.insert1({**mc_key, **nonrigid_mc})
                 self.Block.insert(nr_blocks)
 
             # -- summary images --
-            img_dict = {'ref_image': , # make nullable ?
-                        'average_image': , # calculate for caiman?
+            img_dict = {'ref_image': None, # make nullable ?
+                        'average_image': None, # calculate for caiman?
                         'correlation_image': caiman_loader.correlation_image,
-                        'max_proj_image': }
+                        'max_proj_image': None}
             self.Summary.insert1({**mc_key, **img_dict})
 
         else:
@@ -335,8 +349,8 @@ class Segmentation(dj.Computed):
         -> Channel.proj(seg_channel='channel')   # channel used for the segmentation
         -> ScanInfo.Field                        # the field this ROI comes from
         mask_npix                : int           # number of pixels in ROIs
-        mask_center_x            : int           # center x coordinate in pixels
-        mask_center_y            : int           # center y coordinate in pixels
+        mask_center_x            : int           # center x coordinate in pixel
+        mask_center_y            : int           # center y coordinate in pixel
         mask_xpix                : longblob      # x coordinates in pixels
         mask_ypix                : longblob      # y coordinates in pixels        
         mask_weights             : longblob      # weights of the mask at the indices above in column major (Fortran) order
@@ -348,7 +362,6 @@ class Segmentation(dj.Computed):
         if method == 'suite2p':
             data_dir = pathlib.Path(Processing._get_suite2p_dir(key))
             s2p_loader = suite2p.Suite2p(data_dir)
-
             field_keys = (ScanInfo.Field & key).fetch('KEY', order_by='field_z')
 
             # ---- iterate through all s2p plane outputs ----
@@ -379,36 +392,26 @@ class Segmentation(dj.Computed):
             data_dir = pathlib.Path(Processing._get_caiman_dir(key))
             caiman_loader = caiman.CaImAn(data_dir)
 
-            field_keys = (ScanInfo.Field & key).fetch('KEY')
-
             masks, cells = [], []
-            seg_key = (ScanInfo.Field * ProcessingTask & key).fetch1('KEY')
-            for mask_idx, (is_cell, cell_prob, mask_stat) in enumerate(zip(s2p.iscell, s2p.cell_prob, s2p.stat)):
-                masks.append({**seg_key, 'mask': mask_idx, 
-                                'seg_channel': ,
-                                'mask_npix': ,#sparse array conversion
-                                'mask_center_x': ,
-                                'mask_center_y': ,
-                                'mask_xpix': ,
-                                'mask_ypix': ,
-                                'mask_weights': })
-                if is_cell:
-                    cells.append({**seg_key, 'mask_classification_method': 'suite2p_default_classifier',
-                                    'mask': mask_idx, 'mask_type': 'soma', 'confidence': cell_prob})
-
-# cnm.estimates.plot_contours_nb(img=Cn, idx=cnm.estimates.idx_components)
-# mask_npix     # number of pixels in ROIs
-# mask_center_x # center x coordinate in pixels
-# mask_center_y # center y coordinate in pixels
-# mask_xpix     # x coordinates in pixels
-# mask_ypix     # y coordinates in pixels        
-# mask_weights  # weights of the mask at the indices above in column major (Fortran) order
+            for mask in caiman_loader.maks:
+                seg_key = (ScanInfo.Field * ProcessingTask & key & {'field_idx': mask['mask_plane']}).fetch1('KEY')
+                masks.append({**seg_key, 'seg_channel': 0,
+                              'mask': mask['mask_id'],
+                              'mask_npix': mask['mask_npix'],
+                              'mask_center_x': mask['mask_center_x'],
+                              'mask_center_y': mask['mask_center_y'],
+                              'mask_xpix': mask['mask_xpix'],
+                              'mask_ypix': mask['mask_ypix'],
+                              'mask_weights': mask['mask_weights']})
+                if mask['mask_id'] in caiman_loader.cnmf.estimates.idx_components:
+                    cells.append({**seg_key, 'mask_classification_method': 'caiman_default',
+                                  'mask': mask['mask_id'], 'mask_type': 'soma'})
 
             self.insert1(key)
             self.Mask.insert(masks, ignore_extra_fields=True)
 
             if cells:
-                MaskClassification.insert1({**key, 'mask_classification_method': 'suite2p_default_classifier'}, allow_direct_insert=True)
+                MaskClassification.insert1({**key, 'mask_classification_method': 'caiman_default'}, allow_direct_insert=True)
                 MaskClassification.MaskType.insert(cells, ignore_extra_fields=True, allow_direct_insert=True)
 
         else:
@@ -437,7 +440,7 @@ class MaskClassification(dj.Computed):
         -> Segmentation.Mask
         ---
         -> MaskType
-        confidence: float
+        confidence=null: float
         """
 
 
@@ -456,7 +459,7 @@ class Fluorescence(dj.Computed):
         -> Segmentation.Mask
         -> Channel.proj(fluo_channel='channel')  # the channel that this trace comes from         
         ---
-        fluorescence                : longblob  # Raw fluorescence trace
+        fluorescence                : longblob  # fluorescence trace associated with this mask
         neuropil_fluorescence=null  : longblob  # Neuropil fluorescence trace
         """
 
@@ -466,8 +469,6 @@ class Fluorescence(dj.Computed):
         if method == 'suite2p':
             data_dir = pathlib.Path(Processing._get_suite2p_dir(key))
             s2p_loader = suite2p.Suite2p(data_dir)
-
-            self.insert1(key)
 
             # ---- iterate through all s2p plane outputs ----
             fluo_traces, fluo_chn2_traces = [], []
@@ -484,20 +485,19 @@ class Fluorescence(dj.Computed):
                                                  'fluo_channel': 1,
                                                  'fluorescence': f2, 'neuropil_fluorescence': fneu2})
 
+            self.insert1(key)
             self.Trace.insert(fluo_traces + fluo_chn2_traces)
 
         elif method == 'caiman':
             data_dir = pathlib.Path(Processing._get_caiman_dir(key))
             caiman_loader = caiman.CaImAn(data_dir)
 
-            self.insert1(key)   # ?
-
             fluo_traces = []
-            for mask_idx in range(len(caiman_loader.estimates['C'][...][0,:])):
-                fluo_traces.append({**key, 'mask': mask_idx,
-                                    'fluo_channel': 0,
-                                    'fluorescence': caiman_loader.estimates['C'][...][:,mask_idx]})
+            for mask in caiman_loader.maks:
+                fluo_traces.append({**key, 'mask': mask['mask_id'], 'fluo_channel': 0,
+                                    'fluorescence': mask['inferred_trace']})
 
+            self.insert1(key)
             self.Trace.insert(fluo_traces)
         else:
             raise NotImplementedError('Unknown/unimplemented method: {}'.format(method))
@@ -549,17 +549,19 @@ class Activity(dj.Computed):
                 self.Trace.insert(spikes)
                 
         elif method == 'caiman':
-            data_dir = pathlib.Path(Processing._get_caiman_dir(key))
-            caiman_loader = caiman.CaImAn(data_dir)
+            if key['extraction_method'] in ('caiman_deconvolution', 'caiman_dff'):
+                attr_mapper = {'caiman_deconvolution': 'spikes', 'caiman_dff': 'dff'}
 
-            self.insert1(key)# ?
+                data_dir = pathlib.Path(Processing._get_caiman_dir(key))
+                caiman_loader = caiman.CaImAn(data_dir)
 
-            spikes = []
-            for mask_idx in range(len(caiman_loader.estimates['S'][...][0,:])):
-                spikes.append({**key, 'mask': mask_idx,
-                                'fluo_channel': 0,
-                                'activity_trace': caiman_loader.estimates['S'][...][:,mask_idx]})
-            self.Trace.insert(spikes)
+                activities = []
+                for mask in caiman_loader.maks:
+                    activities.append({**key, 'mask': mask['mask_id'], 'fluo_channel': 0,
+                                       'activity_trace': mask[attr_mapper[key['extraction_method']]]})
+
+                self.insert1(key)
+                self.Trace.insert(activities)
 
         else:
             raise NotImplementedError('Unknown/unimplemented method: {}'.format(method))
