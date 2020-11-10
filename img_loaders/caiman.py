@@ -49,6 +49,14 @@ class CaImAn:
             self._masks = self.extract_masks()
         return self._masks
 
+    @property
+    def alignment_channel(self):
+        return 0  # hard-code to channel index 0
+
+    @property
+    def segmentation_channel(self):
+        return 0  # hard-code to channel index 0
+
     def extract_masks(self):
         if self.cnmf.params.motion['is3D']:
             raise NotImplemented('CaImAn mask extraction for volumetric data not yet implemented')

@@ -395,7 +395,7 @@ class Segmentation(dj.Computed):
             masks, cells = [], []
             for mask in caiman_loader.maks:
                 seg_key = (ScanInfo.Field * ProcessingTask & key & {'field_idx': mask['mask_plane']}).fetch1('KEY')
-                masks.append({**seg_key, 'seg_channel': 0,
+                masks.append({**seg_key, 'seg_channel': caiman_loader.segmentation_channel,
                               'mask': mask['mask_id'],
                               'mask_npix': mask['mask_npix'],
                               'mask_center_x': mask['mask_center_x'],
@@ -494,7 +494,7 @@ class Fluorescence(dj.Computed):
 
             fluo_traces = []
             for mask in caiman_loader.maks:
-                fluo_traces.append({**key, 'mask': mask['mask_id'], 'fluo_channel': 0,
+                fluo_traces.append({**key, 'mask': mask['mask_id'], 'fluo_channel': caiman_loader.segmentation_channel,
                                     'fluorescence': mask['inferred_trace']})
 
             self.insert1(key)
@@ -557,9 +557,9 @@ class Activity(dj.Computed):
 
                 activities = []
                 for mask in caiman_loader.maks:
-                    activities.append({**key, 'mask': mask['mask_id'], 'fluo_channel': 0,
+                    activities.append({**key, 'mask': mask['mask_id'],
+                                       'fluo_channel': caiman_loader.segmentation_channel,
                                        'activity_trace': mask[attr_mapper[key['extraction_method']]]})
-
                 self.insert1(key)
                 self.Trace.insert(activities)
 
