@@ -392,10 +392,14 @@ class Segmentation(dj.Computed):
             data_dir = pathlib.Path(Processing._get_caiman_dir(key))
             caiman_loader = caiman.CaImAn(data_dir)
 
+            # infer "segmentation_channel" - from params if available, else from caiman loader
+            params = (ProcessingParamSet * ProcessingTask & key).fetch1('params')
+            seg_channel = params.get('segmentation_channel', caiman_loader.segmentation_channel)
+
             masks, cells = [], []
             for mask in caiman_loader.maks:
                 seg_key = (ScanInfo.Field * ProcessingTask & key & {'field_idx': mask['mask_plane']}).fetch1('KEY')
-                masks.append({**seg_key, 'seg_channel': caiman_loader.segmentation_channel,
+                masks.append({**seg_key, 'seg_channel': seg_channel,
                               'mask': mask['mask_id'],
                               'mask_npix': mask['mask_npix'],
                               'mask_center_x': mask['mask_center_x'],
@@ -492,9 +496,13 @@ class Fluorescence(dj.Computed):
             data_dir = pathlib.Path(Processing._get_caiman_dir(key))
             caiman_loader = caiman.CaImAn(data_dir)
 
+            # infer "segmentation_channel" - from params if available, else from caiman loader
+            params = (ProcessingParamSet * ProcessingTask & key).fetch1('params')
+            seg_channel = params.get('segmentation_channel', caiman_loader.segmentation_channel)
+
             fluo_traces = []
             for mask in caiman_loader.maks:
-                fluo_traces.append({**key, 'mask': mask['mask_id'], 'fluo_channel': caiman_loader.segmentation_channel,
+                fluo_traces.append({**key, 'mask': mask['mask_id'], 'fluo_channel': seg_channel,
                                     'fluorescence': mask['inferred_trace']})
 
             self.insert1(key)
@@ -555,10 +563,14 @@ class Activity(dj.Computed):
                 data_dir = pathlib.Path(Processing._get_caiman_dir(key))
                 caiman_loader = caiman.CaImAn(data_dir)
 
+                # infer "segmentation_channel" - from params if available, else from caiman loader
+                params = (ProcessingParamSet * ProcessingTask & key).fetch1('params')
+                seg_channel = params.get('segmentation_channel', caiman_loader.segmentation_channel)
+
                 activities = []
                 for mask in caiman_loader.maks:
                     activities.append({**key, 'mask': mask['mask_id'],
-                                       'fluo_channel': caiman_loader.segmentation_channel,
+                                       'fluo_channel': seg_channel,
                                        'activity_trace': mask[attr_mapper[key['extraction_method']]]})
                 self.insert1(key)
                 self.Trace.insert(activities)
