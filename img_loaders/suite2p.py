@@ -19,6 +19,9 @@ class Suite2p:
 
         ops_filepaths = self.suite2p_dir.rglob('*ops.npy')
 
+        if not len(ops_filepaths):
+            raise FileNotFoundError('Suite2p output result files not found at {}'.format(suite2p_dir))
+
         self.planes = {}
         self.planes_combined = None
         for ops_fp in ops_filepaths:

@@ -3,5 +3,6 @@ scipy
 pyfftw
 imreg_dft
 sklearn
-canonical-utils @ https://github.com/vathes/canonical-utils.git
-scanreader @ https://github.com/atlab/scanreader.git
+h5py
+canonical-utils @ git+https://github.com/vathes/canonical-utils.git
+scanreader @ git+https://github.com/atlab/scanreader.git
