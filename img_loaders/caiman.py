@@ -3,6 +3,7 @@ import caiman
 import scipy
 import numpy as np
 from datetime import datetime
+import pathlib
 
 
 class CaImAn:
@@ -24,6 +25,10 @@ class CaImAn:
     """
 
     def __init__(self, caiman_dir):
+        caiman_dir = pathlib.Path(caiman_dir)
+        if not caiman_dir.exists():
+            raise FileNotFoundError('CaImAn directory not found: {}'.format(caiman_dir))
+
         self.estimates_fp, self.mc_fp = None, None
 
         h5_files = list(caiman_dir.glob('*.hdf5'))
@@ -102,3 +107,39 @@ class CaImAn:
         else:
             self._shifts_rig        = h5f_manual['shifts_rig']
             return self._dims, self._dview, self._estimates, self._mmap_file, self._params, self._remove_very_bad_comps, self._skip_refinement, self._correlation_image, self._shifts_rig
+
+
+def process_scanimage_tiff(scan_filenames, output_dir='./'):
+    """
+    Read scanimage tiffs - reshape into volumetric data based on scanning depths and channels
+    Save new `tif` files for each channel - with shape (frame x height x width x depth)
+    """
+    from skimage.external.tifffile import imsave
+    import scanreader
+    from tqdm import tqdm
+
+    # ============ CaImAn multi-channel multi-plane tiff file ==============
+    for scan_filename in tqdm(scan_filenames):
+        scan = scanreader.read_scan(scan_filename)
+        cm_movie = caiman.load(scan_filename)
+
+        # ---- Volumetric movie: (depth x height x width x channel x frame) ----
+        # tiff pages are ordered as:
+        # ch0-pln0-t0, ch1-pln0-t0, ch0-pln1-t0, ch1-pln1-t0, ..., ch0-pln1-t5, ch1-pln1-t5, ...
+
+        vol_timeseries = np.full((scan.num_scanning_depths, scan.image_height, scan.image_width,
+                                  scan.num_channels, scan.num_frames), 0).astype(scan.dtype)
+        for pln_idx in range(scan.num_scanning_depths):
+            for chn_idx in range(scan.num_channels):
+                pln_chn_ind = np.arange(pln_idx * scan.num_channels + chn_idx, scan._num_pages,
+                                        scan.num_scanning_depths * scan.num_channels)
+                vol_timeseries[pln_idx, :, :, chn_idx, :] = cm_movie[pln_chn_ind, :, :].transpose(1, 2, 0)
+
+        # save volumetric movie for individual channel
+        output_dir = pathlib.Path(output_dir)
+        fname = pathlib.Path(scan_filename).stem
+
+        for chn_idx in range(scan.num_channels):
+            chn_vol = vol_timeseries[:, :, :, 0, :].transpose(3, 1, 2, 0)  # (frame x height x width x depth)
+            save_fp = output_dir / 'chn{}_{}.tif'.format(chn_idx, fname)
+            imsave(save_fp.as_posix(), chn_vol)
