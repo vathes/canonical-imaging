@@ -347,7 +347,6 @@ class Segmentation(dj.Computed):
         mask                : smallint
         ---
         -> Channel.proj(seg_channel='channel')   # channel used for the segmentation
-        -> ScanInfo.Field                        # the field this ROI comes from
         mask_npix                : int           # number of pixels in ROIs
         mask_center_x            : int           # center x coordinate in pixel
         mask_center_y            : int           # center y coordinate in pixel
