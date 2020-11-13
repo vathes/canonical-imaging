@@ -63,20 +63,24 @@ class CaImAn:
         return 0  # hard-code to channel index 0
 
     def extract_masks(self):
-        if self.cnmf.params.motion['is3D']:
-            raise NotImplemented('CaImAn mask extraction for volumetric data not yet implemented')
-
         comp_contours = caiman.utils.visualization.get_contours(self.cnmf.estimates.A, self.cnmf.dims)
 
         masks = []
         for comp_idx, comp_contour in enumerate(comp_contours):
             ind, _, weights = scipy.sparse.find(self.cnmf.estimates.A[:, comp_idx])
-            xpix, ypix = np.unravel_index(ind, self.cnmf.dims, order='F')
-            center_x, center_y = comp_contour['CoM'].astype(int)
-            masks.append({'mask_id': comp_contour['neuron_id'], 'mask_plane': 0,
+            if self.cnmf.params.motion['is3D']:
+                xpix, ypix, zpix = np.unravel_index(ind, self.cnmf.dims, order='F')
+                center_x, center_y, center_z = comp_contour['CoM'].astype(int)
+            else:
+                xpix, ypix = np.unravel_index(ind, self.cnmf.dims, order='F')
+                center_x, center_y = comp_contour['CoM'].astype(int)
+                center_z = 0
+                zpix = np.full(len(weights), center_z)
+
+            masks.append({'mask_id': comp_contour['neuron_id'],
                           'mask_npix': len(weights), 'mask_weights': weights,
-                          'mask_center_x': center_x, 'mask_center_y': center_y,
-                          'mask_xpix': xpix, 'mask_ypix': ypix,
+                          'mask_center_x': center_x, 'mask_center_y': center_y, 'mask_center_z': center_z,
+                          'mask_xpix': xpix, 'mask_ypix': ypix, 'mask_zpix': zpix,
                           'inferred_trace': self.cnmf.estimates.C[comp_idx, :],
                           'dff': self.cnmf.estimates.F_dff[comp_idx, :],
                           'spikes': self.cnmf.estimates.S[comp_idx, :]})
