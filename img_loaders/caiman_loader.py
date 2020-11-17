@@ -4,6 +4,7 @@ import scipy
 import numpy as np
 from datetime import datetime
 import os
+import pathlib
 
 
 class CaImAn:
@@ -23,7 +24,8 @@ class CaImAn:
 
     def __init__(self, caiman_fp):
         # ---- Verify dataset exists ----
-        if caiman_fp is None:
+        caiman_fp = pathlib.Path(caiman_fp)
+        if not caiman_fp.exists():
             raise FileNotFoundError('CaImAn results (.hdf5) file not found at {}'.format(caiman_fp))
 
         self.h5f = h5py.File(caiman_fp, 'r')
@@ -66,12 +68,19 @@ class CaImAn:
         masks = []
         for comp_idx, comp_contour in enumerate(comp_contours):
             ind, _, weights = scipy.sparse.find(self.cnmf.estimates.A[:, comp_idx])
-            xpix, ypix = np.unravel_index(ind, self.cnmf.dims, order='F')
-            center_x, center_y = comp_contour['CoM'].astype(int)
-            masks.append({'mask_id': comp_contour['neuron_id'], 'mask_plane': 0,
+            if self.cnmf.params.motion['is3D']:
+                xpix, ypix, zpix = np.unravel_index(ind, self.cnmf.dims, order='F')
+                center_x, center_y, center_z = comp_contour['CoM'].astype(int)
+            else:
+                xpix, ypix = np.unravel_index(ind, self.cnmf.dims, order='F')
+                center_x, center_y = comp_contour['CoM'].astype(int)
+                center_z = 0
+                zpix = np.full(len(weights), center_z)
+            
+            masks.append({'mask_id': comp_contour['neuron_id'],
                           'mask_npix': len(weights), 'mask_weights': weights,
-                          'mask_center_x': center_x, 'mask_center_y': center_y,
-                          'mask_xpix': xpix, 'mask_ypix': ypix,
+                          'mask_center_x': center_x, 'mask_center_y': center_y, 'mask_center_z': center_z,
+                          'mask_xpix': xpix, 'mask_ypix': ypix, 'mask_zpix': zpix,
                           'inferred_trace': self.cnmf.estimates.C[comp_idx, :],
                           'dff': self.cnmf.estimates.F_dff[comp_idx, :],
                           'spikes': self.cnmf.estimates.S[comp_idx, :]})
@@ -146,3 +155,38 @@ class CaImAn:
         self.motion_correction     = self.h5f['motion_correction']
 
         return self
+    
+    def process_scanimage_tiff(scan_filenames, output_dir='./'):
+        """
+        Read scanimage tiffs - reshape into volumetric data based on scanning depths and channels
+        Save new `tif` files for each channel - with shape (frame x height x width x depth)
+        """
+        from skimage.external.tifffile import imsave
+        import scanreader
+        from tqdm import tqdm
+
+        # ============ CaImAn multi-channel multi-plane tiff file ==============
+        for scan_filename in tqdm(scan_filenames):
+            scan = scanreader.read_scan(scan_filename)
+            cm_movie = caiman.load(scan_filename)
+
+            # ---- Volumetric movie: (depth x height x width x channel x frame) ----
+            # tiff pages are ordered as:
+            # ch0-pln0-t0, ch1-pln0-t0, ch0-pln1-t0, ch1-pln1-t0, ..., ch0-pln1-t5, ch1-pln1-t5, ...
+
+            vol_timeseries = np.full((scan.num_scanning_depths, scan.image_height, scan.image_width,
+                                    scan.num_channels, scan.num_frames), 0).astype(scan.dtype)
+            for pln_idx in range(scan.num_scanning_depths):
+                for chn_idx in range(scan.num_channels):
+                    pln_chn_ind = np.arange(pln_idx * scan.num_channels + chn_idx, scan._num_pages,
+                                            scan.num_scanning_depths * scan.num_channels)
+                    vol_timeseries[pln_idx, :, :, chn_idx, :] = cm_movie[pln_chn_ind, :, :].transpose(1, 2, 0)
+
+            # save volumetric movie for individual channel
+            output_dir = pathlib.Path(output_dir)
+            fname = pathlib.Path(scan_filename).stem
+
+            for chn_idx in range(scan.num_channels):
+                chn_vol = vol_timeseries[:, :, :, 0, :].transpose(3, 1, 2, 0)  # (frame x height x width x depth)
+                save_fp = output_dir / 'chn{}_{}.tif'.format(chn_idx, fname)
+                imsave(save_fp.as_posix(), chn_vol)

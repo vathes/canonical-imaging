@@ -17,7 +17,7 @@ class Suite2p:
     def __init__(self, suite2p_dir):
         self.suite2p_dir = pathlib.Path(suite2p_dir)
 
-        ops_filepaths = self.suite2p_dir.rglob('*ops.npy')
+        ops_filepaths = list(self.suite2p_dir.rglob('*ops.npy'))
 
         if not len(ops_filepaths):
             raise FileNotFoundError('Suite2p output result files not found at {}'.format(suite2p_dir))
