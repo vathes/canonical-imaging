@@ -408,8 +408,10 @@ class Segmentation(dj.Computed):
                               'mask_npix': mask['mask_npix'],
                               'mask_center_x': mask['mask_center_x'],
                               'mask_center_y': mask['mask_center_y'],
+                              'mask_center_z': mask['mask_center_z'],
                               'mask_xpix': mask['mask_xpix'],
                               'mask_ypix': mask['mask_ypix'],
+                              'mask_zpix': mask['mask_zpix'],
                               'mask_weights': mask['mask_weights']})
                 if mask['mask_id'] in caiman_loader_inst.cnmf.estimates.idx_components:
                     cells.append({**key, 'mask_classification_method': 'caiman_default',
