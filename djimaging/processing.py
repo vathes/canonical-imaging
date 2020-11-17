@@ -347,12 +347,13 @@ class Segmentation(dj.Computed):
         mask                : smallint
         ---
         -> Channel.proj(seg_channel='channel')   # channel used for the segmentation
-        -> ScanInfo.Field                        # the field this ROI comes from
         mask_npix                : int           # number of pixels in ROIs
         mask_center_x            : int           # center x coordinate in pixel
         mask_center_y            : int           # center y coordinate in pixel
+        mask_center_z            : int           # center z coordinate in pixel
         mask_xpix                : longblob      # x coordinates in pixels
-        mask_ypix                : longblob      # y coordinates in pixels        
+        mask_ypix                : longblob      # y coordinates in pixels      
+        mask_zpix                : longblob      # z coordinates in pixels        
         mask_weights             : longblob      # weights of the mask at the indices above in column major (Fortran) order
         """
 
@@ -367,18 +368,19 @@ class Segmentation(dj.Computed):
             # ---- iterate through all s2p plane outputs ----
             masks, cells = [], []
             for plane, s2p in s2p_loader.planes.items():
-                seg_key = (ScanInfo.Field * ProcessingTask & key & field_keys[plane]).fetch1('KEY')
                 mask_count = len(masks)  # increment mask id from all "plane"
                 for mask_idx, (is_cell, cell_prob, mask_stat) in enumerate(zip(s2p.iscell, s2p.cell_prob, s2p.stat)):
-                    masks.append({**seg_key, 'mask': mask_idx + mask_count, 'seg_channel': s2p.segmentation_channel,
+                    masks.append({**key, 'mask': mask_idx + mask_count, 'seg_channel': s2p.segmentation_channel,
                                   'mask_npix': mask_stat['npix'],
                                   'mask_center_x':  mask_stat['med'][1],
                                   'mask_center_y':  mask_stat['med'][0],
+                                  'mask_center_z': mask_stat.get('iplane', plane),
                                   'mask_xpix':  mask_stat['xpix'],
                                   'mask_ypix':  mask_stat['ypix'],
+                                  'mask_zpix': np.full(mask_stat['npix'], mask_stat.get('iplane', plane)),
                                   'mask_weights':  mask_stat['lam']})
                     if is_cell:
-                        cells.append({**seg_key, 'mask_classification_method': 'suite2p_default_classifier',
+                        cells.append({**key, 'mask_classification_method': 'suite2p_default_classifier',
                                       'mask': mask_idx + mask_count, 'mask_type': 'soma', 'confidence': cell_prob})
 
             self.insert1(key)
@@ -397,9 +399,8 @@ class Segmentation(dj.Computed):
             seg_channel = params.get('segmentation_channel', caiman_loader.segmentation_channel)
 
             masks, cells = [], []
-            for mask in caiman_loader.maks:
-                seg_key = (ScanInfo.Field * ProcessingTask & key & {'field_idx': mask['mask_plane']}).fetch1('KEY')
-                masks.append({**seg_key, 'seg_channel': seg_channel,
+            for mask in caiman_loader.masks:
+                masks.append({**key, 'seg_channel': seg_channel,
                               'mask': mask['mask_id'],
                               'mask_npix': mask['mask_npix'],
                               'mask_center_x': mask['mask_center_x'],
@@ -408,7 +409,7 @@ class Segmentation(dj.Computed):
                               'mask_ypix': mask['mask_ypix'],
                               'mask_weights': mask['mask_weights']})
                 if mask['mask_id'] in caiman_loader.cnmf.estimates.idx_components:
-                    cells.append({**seg_key, 'mask_classification_method': 'caiman_default',
+                    cells.append({**key, 'mask_classification_method': 'caiman_default',
                                   'mask': mask['mask_id'], 'mask_type': 'soma'})
 
             self.insert1(key)
