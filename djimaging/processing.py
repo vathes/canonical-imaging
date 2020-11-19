@@ -145,9 +145,7 @@ class Processing(dj.Computed):
 
             elif method == 'caiman':
                 data_dir = pathlib.Path(Processing._get_caiman_dir(key))
-                hdf5_fp = list(data_dir.glob('*.hdf5'))
-                caiman_fp = hdf5_fp[0].as_posix()
-                caiman_loader_inst = caiman_loader.CaImAn(caiman_fp)
+                caiman_loader_inst = caiman_loader.CaImAn(data_dir)
 
                 key = {**key, 'proc_completion_time': caiman_loader_inst.creation_time,
                               'proc_curation_time': caiman_loader_inst.curation_time}
@@ -155,7 +153,7 @@ class Processing(dj.Computed):
                 # Insert file(s)
                 # root = pathlib.Path(PhysicalFile._get_root_data_dir())
                 # output_files = [pathlib.Path(f).relative_to(root).as_posix() for f in output_files if f.is_file()]
-                output_files=[caiman_fp]
+                output_files=[caiman_loader_inst.caiman_fp]
             else:
                 raise NotImplementedError('Unknown method: {}'.format(method))
 
@@ -283,12 +281,10 @@ class MotionCorrection(dj.Imported):
 
         elif method == 'caiman':
             data_dir = pathlib.Path(Processing._get_caiman_dir(key))
-            hdf5_fp = list(data_dir.glob('*.hdf5'))
-            caiman_fp = hdf5_fp[0].as_posix()
-            caiman_loader_inst = caiman_loader.CaImAn(caiman_fp)
-            caiman_results = caiman_loader_inst.extract_mc(caiman_fp)
+            caiman_loader_inst = caiman_loader.CaImAn(data_dir)
+            caiman_results = caiman_loader_inst.extract_mc()
 
-            self.insert1({**key, 'mc_channel': caiman_results.alignment_channel})
+            self.insert1({**key, 'mc_channel': caiman_loader_inst.alignment_channel})
             mc_key = (ScanInfo.Field * ProcessingTask & key).fetch1('KEY')
 
             # -- rigid motion correction --
@@ -393,9 +389,7 @@ class Segmentation(dj.Computed):
         
         elif method == 'caiman':
             data_dir = pathlib.Path(Processing._get_caiman_dir(key))
-            hdf5_fp = list(data_dir.glob('*.hdf5'))
-            caiman_fp = hdf5_fp[0].as_posix()
-            caiman_loader_inst = caiman_loader.CaImAn(caiman_fp)
+            caiman_loader_inst = caiman_loader.CaImAn(data_dir)
 
             # infer "segmentation_channel" - from params if available, else from caiman loader
             params = (ProcessingParamSet * ProcessingTask & key).fetch1('params')
@@ -503,9 +497,7 @@ class Fluorescence(dj.Computed):
 
         elif method == 'caiman':
             data_dir = pathlib.Path(Processing._get_caiman_dir(key))
-            hdf5_fp = list(data_dir.glob('*.hdf5'))
-            caiman_fp = hdf5_fp[0].as_posix()
-            caiman_loader_inst = caiman_loader.CaImAn(caiman_fp)
+            caiman_loader_inst = caiman_loader.CaImAn(data_dir)
 
             # infer "segmentation_channel" - from params if available, else from caiman loader
             params = (ProcessingParamSet * ProcessingTask & key).fetch1('params')
@@ -572,9 +564,7 @@ class Activity(dj.Computed):
                 attr_mapper = {'caiman_deconvolution': 'spikes', 'caiman_dff': 'dff'}
 
                 data_dir = pathlib.Path(Processing._get_caiman_dir(key))
-                hdf5_fp = list(data_dir.glob('*.hdf5'))
-                caiman_fp = hdf5_fp[0].as_posix()
-                caiman_loader_inst = caiman_loader.CaImAn(caiman_fp)
+                caiman_loader_inst = caiman_loader.CaImAn(data_dir)
 
                 # infer "segmentation_channel" - from params if available, else from caiman loader
                 params = (ProcessingParamSet * ProcessingTask & key).fetch1('params')
