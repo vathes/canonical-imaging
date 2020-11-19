@@ -4,13 +4,14 @@ import numpy as np
 import pathlib
 from datetime import datetime
 from uuid import UUID
+import os
 
 from .imaging import schema, Scan, ScanInfo, Channel, PhysicalFile
 from .utils import dict_to_hash
 
 from djutils.templates import required, optional
 
-from img_loaders import suite2p, caiman
+from img_loaders import suite2p_loader, caiman_loader
 
 # ===================================== Lookup =====================================
 
@@ -135,27 +136,24 @@ class Processing(dj.Computed):
                     raise NotImplementedError(f'Suite2p ingestion error - Unable to handle ScanImage multi-ROI scanning mode yet')
 
                 data_dir = pathlib.Path(Processing._get_suite2p_dir(key))
-                s2p_loader = suite2p.Suite2p(data_dir)
-                key = {**key, 'proc_completion_time': s2p_loader.creation_time, 'proc_curation_time': s2p_loader.curation_time}
-                # Insert file(s)
-                root = pathlib.Path(PhysicalFile._get_root_data_dir())
-                output_files = data_dir.glob('*')  # works for Suite2p, maybe something more file-specific for CaImAn
-                output_files = [pathlib.Path(f).relative_to(root).as_posix() for f in output_files if f.is_file()]
-
-            elif method == 'caiman':
-                if (ScanInfo & key).fetch1('nrois') > 0:
-                    raise NotImplementedError(
-                        f'Suite2p ingestion error - Unable to handle ScanImage multi-ROI scanning mode yet')
-
-                data_dir = pathlib.Path(Processing._get_caiman_dir(key))
-                caiman_loader = caiman.CaImAn(data_dir)
-                key = {**key, 'proc_completion_time': caiman_loader.creation_time,
-                       'proc_curation_time': caiman_loader.curation_time}
+                suite2p_loader_inst = suite2p_loader.Suite2p(data_dir)
+                key = {**key, 'proc_completion_time': suite2p_loader_inst.creation_time, 'proc_curation_time': suite2p_loader_inst.curation_time}
                 # Insert file(s)
                 root = pathlib.Path(PhysicalFile._get_root_data_dir())
                 output_files = data_dir.glob('*')
                 output_files = [pathlib.Path(f).relative_to(root).as_posix() for f in output_files if f.is_file()]
 
+            elif method == 'caiman':
+                data_dir = pathlib.Path(Processing._get_caiman_dir(key))
+                caiman_loader_inst = caiman_loader.CaImAn(data_dir)
+
+                key = {**key, 'proc_completion_time': caiman_loader_inst.creation_time,
+                              'proc_curation_time': caiman_loader_inst.curation_time}
+
+                # Insert file(s)
+                # root = pathlib.Path(PhysicalFile._get_root_data_dir())
+                # output_files = [pathlib.Path(f).relative_to(root).as_posix() for f in output_files if f.is_file()]
+                output_files=[caiman_loader_inst.caiman_fp]
             else:
                 raise NotImplementedError('Unknown method: {}'.format(method))
 
@@ -185,11 +183,11 @@ class MotionCorrection(dj.Imported):
         -> master
         -> ScanInfo.Field
         ---
-        outlier_frames                  : longblob      # mask with true for frames with outlier shifts (already corrected)
+        outlier_frames=null             : longblob      # mask with true for frames with outlier shifts (already corrected)
         y_shifts                        : longblob      # (pixels) y motion correction shifts
         x_shifts                        : longblob      # (pixels) x motion correction shifts
-        y_std                           : float         # (pixels) standard deviation of y shifts
-        x_std                           : float         # (pixels) standard deviation of x shifts
+        y_std                           : float         # (pixels) standard deviation of y shifts across all frames
+        x_std                           : float         # (pixels) standard deviation of x shifts across all frames
         z_drift=null                    : longblob      # z-drift over frame of this Field (plane)
         """
 
@@ -199,7 +197,7 @@ class MotionCorrection(dj.Imported):
         -> master
         -> ScanInfo.Field
         ---
-        outlier_frames                  : longblob      # mask with true for frames with outlier shifts (already corrected)
+        outlier_frames=null             : longblob      # mask with true for frames with outlier shifts (already corrected)
         block_height                    : int           # (px)
         block_width                     : int           # (px)
         block_count_y                   : int           # number of blocks tiled in the y direction
@@ -216,8 +214,8 @@ class MotionCorrection(dj.Imported):
         block_x                         : longblob      # (x_start, x_end) in pixel of this block
         y_shifts                        : longblob      # (pixels) y motion correction shifts for every frame
         x_shifts                        : longblob      # (pixels) x motion correction shifts for every frame
-        y_std                           : float         # (pixels) standard deviation of y shifts
-        x_std                           : float         # (pixels) standard deviation of x shifts
+        y_std                           : float         # (pixels) standard deviation of y shifts across all frames
+        x_std                           : float         # (pixels) standard deviation of x shifts across all frames
         """
 
     class Summary(dj.Part):
@@ -237,15 +235,15 @@ class MotionCorrection(dj.Imported):
 
         if method == 'suite2p':
             data_dir = pathlib.Path(Processing._get_suite2p_dir(key))
-            s2p_loader = suite2p.Suite2p(data_dir)
+            suite2p_loader_inst = suite2p_loader.Suite2p(data_dir)
 
             field_keys = (ScanInfo.Field & key).fetch('KEY', order_by='field_z')
 
-            align_chn = s2p_loader.planes[0].alignment_channel
+            align_chn = suite2p_loader_inst.planes[0].alignment_channel
             self.insert1({**key, 'mc_channel': align_chn})
 
             # ---- iterate through all s2p plane outputs ----
-            for plane, s2p in s2p_loader.planes.items():
+            for plane, s2p in suite2p_loader_inst.planes.items():
                 mc_key = (ScanInfo.Field * ProcessingTask & key & field_keys[plane]).fetch1('KEY')
 
                 # -- rigid motion correction --
@@ -283,50 +281,49 @@ class MotionCorrection(dj.Imported):
 
         elif method == 'caiman':
             data_dir = pathlib.Path(Processing._get_caiman_dir(key))
-            caiman_loader = caiman.CaImAn(data_dir)
+            caiman_loader_inst = caiman_loader.CaImAn(data_dir)
+            caiman_results = caiman_loader_inst.extract_mc()
 
-            # align_chn = s2p_loader.planes[0].alignment_channel # where is it specified that 0 is structural and vice versa
-            # self.insert1({**key, 'mc_channel': align_chn})
-
+            self.insert1({**key, 'mc_channel': caiman_loader_inst.alignment_channel})
             mc_key = (ScanInfo.Field * ProcessingTask & key).fetch1('KEY')
 
             # -- rigid motion correction --
-            if not caiman_loader.params['motion']['pw_rigid'][...]:
-
-                rigid_mc = {'y_shifts': caiman_loader.shifts_rig[1,:],
-                            'x_shifts': caiman_loader.shifts_rig[0,:],
-                            'y_std': np.nanstd(caiman_loader.shifts_rig[1,:]), # std frames
-                            'x_std': np.nanstd(caiman_loader.shifts_rig[0,:]),
-                            'outlier_frames': None} # ?
+            if not caiman_results.params['motion']['pw_rigid'][...]:
+                rigid_mc = {'y_shifts': caiman_results.motion_correction['shifts_rig'][:,1],
+                            'x_shifts': caiman_results.motion_correction['shifts_rig'][:,0],
+                            'y_std': np.nanstd(caiman_results.motion_correction['shifts_rig'][:,1]),
+                            'x_std': np.nanstd(caiman_results.motion_correction['shifts_rig'][:,0]),
+                            'outlier_frames': None}
 
                 self.RigidMotionCorrection.insert1({**mc_key, **rigid_mc})
 
             # -- non-rigid motion correction --
-            elif caiman_loader.params['motion']['pw_rigid'][...]:
-                nonrigid_mc = {'block_height': caiman_loader.params['motion']['strides'][...][0]+caiman_loader.params['motion']['overlaps'][...][0],
-                                'block_width': caiman_loader.params['motion']['strides'][...][1]+caiman_loader.params['motion']['overlaps'][...][1],
-                                'block_count_y': None,# number of blocks tiled - round down and cut off last stride
-                                'block_count_x': None,# number of blocks tiled
-                                'outlier_frames': None}# mask with true for frames with outlier shifts (already corrected)
-                                # block vs patch naming
-                b_id=0
-                nr_blocks=[]
-                # implement this loop as a list comprehension. i and j are not necessary. Use y_shifts_els and x_shift_els as iterators.
-                # nr_blocks   =   [({**mc_key, 'block_id': b_id,
-                #                 'block_y': b_y, 'block_x': b_x, # block_y - (y_start, y_end) in pixel of this block, be careful with order/position
-                #                 'y_shifts': caiman_loader.y_shifts_els[:,j], 'x_shifts': caiman_loader.x_shifts_els[:,i],
-                #                 'y_std': np.nanstd(caiman_loader.y_shifts_els[:,j]), 'x_std': np.nanstd(caiman_loader.x_shifts_els[:,i])...# std frames
-                #                 } for j in range(len(caiman_loader.y_shifts_els[0,:])))
-                #                  for i in range(len(caiman_loader.x_shifts_els[0,:])) b_id+=1]
+            else:
+                nonrigid_mc = {'block_height': caiman_results.params['motion']['strides'][...][0]+caiman_results.params['motion']['overlaps'][...][0],
+                                'block_width': caiman_results.params['motion']['strides'][...][1]+caiman_results.params['motion']['overlaps'][...][1],
+                                'block_count_y': np.count_nonzero((caiman_results.motion_correction['coord_shifts_els'][:,0])==0),
+                                'block_count_x': np.count_nonzero((caiman_results.motion_correction['coord_shifts_els'][0,:])==0),
+                                'outlier_frames': None}
+ 
+                nr_blocks = []
+                for b_id in range(len(caiman_results.motion_correction['x_shifts_els'][0,:])):
+                    nr_blocks.append({**mc_key, 'block_id': b_id,
+                                    'block_y': caiman_results.motion_correction['coord_shifts_els'][b_id,2:4],
+                                    'block_x': caiman_results.motion_correction['coord_shifts_els'][b_id,0:2],
+                                    'y_shifts': caiman_results.motion_correction['y_shifts_els'][:,b_id], 
+                                    'x_shifts': caiman_results.motion_correction['x_shifts_els'][:,b_id],
+                                    'y_std': np.nanstd(caiman_results.motion_correction['y_shifts_els'][:,b_id]), 
+                                    'x_std': np.nanstd(caiman_results.motion_correction['x_shifts_els'][:,b_id])
+                                    })
 
                 self.NonRigidMotionCorrection.insert1({**mc_key, **nonrigid_mc})
                 self.Block.insert(nr_blocks)
 
             # -- summary images --
-            img_dict = {'ref_image': None, # make nullable ?
-                        'average_image': None, # calculate for caiman?
-                        'correlation_image': caiman_loader.correlation_image,
-                        'max_proj_image': None}
+            img_dict = {'ref_image': caiman_results.motion_correction['reference_image'][...],
+                        'average_image': caiman_results.motion_correction['average_image'][...],
+                        'correlation_image': caiman_results.motion_correction['correlation_image'][...],
+                        'max_proj_image': caiman_results.motion_correction['max_image'][...]}
             self.Summary.insert1({**mc_key, **img_dict})
 
         else:
@@ -362,12 +359,12 @@ class Segmentation(dj.Computed):
 
         if method == 'suite2p':
             data_dir = pathlib.Path(Processing._get_suite2p_dir(key))
-            s2p_loader = suite2p.Suite2p(data_dir)
+            suite2p_loader_inst = suite2p_loader.Suite2p(data_dir)
             field_keys = (ScanInfo.Field & key).fetch('KEY', order_by='field_z')
 
             # ---- iterate through all s2p plane outputs ----
             masks, cells = [], []
-            for plane, s2p in s2p_loader.planes.items():
+            for plane, s2p in suite2p_loader_inst.planes.items():
                 mask_count = len(masks)  # increment mask id from all "plane"
                 for mask_idx, (is_cell, cell_prob, mask_stat) in enumerate(zip(s2p.iscell, s2p.cell_prob, s2p.stat)):
                     masks.append({**key, 'mask': mask_idx + mask_count, 'seg_channel': s2p.segmentation_channel,
@@ -392,23 +389,25 @@ class Segmentation(dj.Computed):
         
         elif method == 'caiman':
             data_dir = pathlib.Path(Processing._get_caiman_dir(key))
-            caiman_loader = caiman.CaImAn(data_dir)
+            caiman_loader_inst = caiman_loader.CaImAn(data_dir)
 
             # infer "segmentation_channel" - from params if available, else from caiman loader
             params = (ProcessingParamSet * ProcessingTask & key).fetch1('params')
-            seg_channel = params.get('segmentation_channel', caiman_loader.segmentation_channel)
+            seg_channel = params.get('segmentation_channel', caiman_loader_inst.segmentation_channel)
 
             masks, cells = [], []
-            for mask in caiman_loader.masks:
+            for mask in caiman_loader_inst.masks:
                 masks.append({**key, 'seg_channel': seg_channel,
                               'mask': mask['mask_id'],
                               'mask_npix': mask['mask_npix'],
                               'mask_center_x': mask['mask_center_x'],
                               'mask_center_y': mask['mask_center_y'],
+                              'mask_center_z': mask['mask_center_z'],
                               'mask_xpix': mask['mask_xpix'],
                               'mask_ypix': mask['mask_ypix'],
+                              'mask_zpix': mask['mask_zpix'],
                               'mask_weights': mask['mask_weights']})
-                if mask['mask_id'] in caiman_loader.cnmf.estimates.idx_components:
+                if mask['mask_id'] in caiman_loader_inst.cnmf.estimates.idx_components:
                     cells.append({**key, 'mask_classification_method': 'caiman_default',
                                   'mask': mask['mask_id'], 'mask_type': 'soma'})
 
@@ -448,6 +447,9 @@ class MaskClassification(dj.Computed):
         confidence=null: float
         """
 
+    def make(self, key):
+        pass
+
 
 # ===================================== Activity Trace =====================================
 
@@ -473,11 +475,11 @@ class Fluorescence(dj.Computed):
 
         if method == 'suite2p':
             data_dir = pathlib.Path(Processing._get_suite2p_dir(key))
-            s2p_loader = suite2p.Suite2p(data_dir)
+            suite2p_loader_inst = suite2p_loader.Suite2p(data_dir)
 
             # ---- iterate through all s2p plane outputs ----
             fluo_traces, fluo_chn2_traces = [], []
-            for s2p in s2p_loader.planes.values():
+            for s2p in suite2p_loader_inst.planes.values():
                 mask_count = len(fluo_traces)  # increment mask id from all "plane"
                 for mask_idx, (f, fneu) in enumerate(zip(s2p.F, s2p.Fneu)):
                     fluo_traces.append({**key, 'mask': mask_idx + mask_count,
@@ -495,14 +497,14 @@ class Fluorescence(dj.Computed):
 
         elif method == 'caiman':
             data_dir = pathlib.Path(Processing._get_caiman_dir(key))
-            caiman_loader = caiman.CaImAn(data_dir)
+            caiman_loader_inst = caiman_loader.CaImAn(data_dir)
 
             # infer "segmentation_channel" - from params if available, else from caiman loader
             params = (ProcessingParamSet * ProcessingTask & key).fetch1('params')
-            seg_channel = params.get('segmentation_channel', caiman_loader.segmentation_channel)
+            seg_channel = params.get('segmentation_channel', caiman_loader_inst.segmentation_channel)
 
             fluo_traces = []
-            for mask in caiman_loader.maks:
+            for mask in caiman_loader_inst.masks:
                 fluo_traces.append({**key, 'mask': mask['mask_id'], 'fluo_channel': seg_channel,
                                     'fluorescence': mask['inferred_trace']})
 
@@ -543,13 +545,13 @@ class Activity(dj.Computed):
         if method == 'suite2p':
             if key['extraction_method'] == 'suite2p_deconvolution':
                 data_dir = pathlib.Path(Processing._get_suite2p_dir(key))
-                s2p_loader = suite2p.Suite2p(data_dir)
+                suite2p_loader_inst = suite2p_loader.Suite2p(data_dir)
 
                 self.insert1(key)
 
                 # ---- iterate through all s2p plane outputs ----
                 spikes = []
-                for s2p in s2p_loader.planes.values():
+                for s2p in suite2p_loader_inst.planes.values():
                     mask_count = len(spikes)  # increment mask id from all "plane"
                     for mask_idx, spks in enumerate(s2p.spks):
                         spikes.append({**key, 'mask': mask_idx + mask_count,
@@ -562,14 +564,14 @@ class Activity(dj.Computed):
                 attr_mapper = {'caiman_deconvolution': 'spikes', 'caiman_dff': 'dff'}
 
                 data_dir = pathlib.Path(Processing._get_caiman_dir(key))
-                caiman_loader = caiman.CaImAn(data_dir)
+                caiman_loader_inst = caiman_loader.CaImAn(data_dir)
 
                 # infer "segmentation_channel" - from params if available, else from caiman loader
                 params = (ProcessingParamSet * ProcessingTask & key).fetch1('params')
-                seg_channel = params.get('segmentation_channel', caiman_loader.segmentation_channel)
+                seg_channel = params.get('segmentation_channel', caiman_loader_inst.segmentation_channel)
 
                 activities = []
-                for mask in caiman_loader.maks:
+                for mask in caiman_loader_inst.masks:
                     activities.append({**key, 'mask': mask['mask_id'],
                                        'fluo_channel': seg_channel,
                                        'activity_trace': mask[attr_mapper[key['extraction_method']]]})
