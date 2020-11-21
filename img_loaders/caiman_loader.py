@@ -7,6 +7,13 @@ import os
 import pathlib
 
 
+_required_hdf5_fields = ['/motion_correction/reference_image',
+                         '/motion_correction/correlation_image',
+                         '/motion_correction/average_image',
+                         '/motion_correction/max_image',
+                         '/estimates/A']
+
+
 class CaImAn:
     """
     Parse the CaImAn output file
@@ -22,26 +29,23 @@ class CaImAn:
     CaImAn results doc: https://caiman.readthedocs.io/en/master/Getting_Started.html#result-variables-for-2p-batch-analysis
     """
 
-    def __init__(self, data_dir):
-        # ---- Verify dataset exists ----
-        hdf5_fp = list(data_dir.glob('*.hdf5'))
-        self.caiman_fp = hdf5_fp[0].as_posix()
+    def __init__(self, caiman_dir):
+        # ---- Search and verify CaImAn output file exists ----
+        caiman_dir = pathlib.Path(caiman_dir)
+        if not caiman_dir.exists():
+            raise FileNotFoundError('CaImAn directory not found: {}'.format(caiman_dir))
 
-        if not pathlib.Path(self.caiman_fp).exists():
-            raise FileNotFoundError('CaImAn results (.hdf5) file not found at {}'.format(caiman_fp))
-
-        # ---- Open CaImAn output file ----
-        self.h5f = h5py.File(self.caiman_fp, 'r')
-
-        if not any(s in self.h5f for s in ('/motion_correction/reference_image',
-                                           '/motion_correction/correlation_image',
-                                           '/motion_correction/average_image',
-                                           '/motion_correction/max_image',
-                                           '/estimates/A')):
-            raise NameError('CaImAn results (.hdf5) file found at {} does not contain all datasets'.format(caiman_fp))
+        for fp in caiman_dir.glob('*.hdf5'):
+            with h5py.File(fp, 'r') as h5f:
+                if all(s in h5f for s in _required_hdf5_fields):
+                    self.caiman_fp = fp
 
         # ---- Initialize CaImAn's results ----
         self.cnmf = cm.source_extraction.cnmf.cnmf.load_CNMF(self.caiman_fp)
+        self.params = self.cnmf.params
+
+        self.h5f = h5py.File(self.caiman_fp, 'r')
+        self.motion_correction = self.h5f['motion_correction']
         self._masks = None
 
         # ---- Metainfo ----
@@ -63,7 +67,7 @@ class CaImAn:
         return 0  # hard-code to channel index 0
 
     def extract_masks(self):
-        if self.cnmf.params.motion['is3D']:
+        if self.params.motion['is3D']:
             raise NotImplemented('CaImAn mask extraction for volumetric data not yet implemented')
 
         comp_contours = cm.utils.visualization.get_contours(self.cnmf.estimates.A, self.cnmf.dims)
@@ -89,11 +93,6 @@ class CaImAn:
                           'spikes': self.cnmf.estimates.S[comp_idx, :]})
         return masks
 
-    def extract_mc(self):
-        self.params            = self.h5f['params']
-        self.motion_correction = self.h5f['motion_correction']
-
-        return self
 
 def process_scanimage_tiff(scan_filenames, output_dir='./'):
     """
@@ -107,7 +106,7 @@ def process_scanimage_tiff(scan_filenames, output_dir='./'):
     # ============ CaImAn multi-channel multi-plane tiff file ==============
     for scan_filename in tqdm(scan_filenames):
         scan = scanreader.read_scan(scan_filename)
-        cm_movie = caiman.load(scan_filename)
+        cm_movie = cm.load(scan_filename)
 
         # ---- Volumetric movie: (depth x height x width x channel x frame) ----
         # tiff pages are ordered as:
@@ -130,7 +129,8 @@ def process_scanimage_tiff(scan_filenames, output_dir='./'):
             save_fp = output_dir / 'chn{}_{}.tif'.format(chn_idx, fname)
             imsave(save_fp.as_posix(), chn_vol)
 
-def save_mc(mc,caiman_fp):
+
+def save_mc(mc, caiman_fp):
     """
     DataJoint Imaging Element - CaImAn Integration
     Run these commands after the CaImAn analysis has completed.
@@ -163,23 +163,23 @@ def save_mc(mc,caiman_fp):
         xy_grid.append([x, x + mc.overlaps[0] + mc.strides[0], y, y + mc.overlaps[1] + mc.strides[1]])
 
     # Open hdf5 file and create 'motion_correction' group
-    h5f = h5py.File(caiman_fp,'r+')
+    h5f = h5py.File(caiman_fp, 'r+')
     h5g = h5f.require_group("motion_correction")
 
     # Write motion correction shifts and motion corrected summary images to hdf5 file
     if mc.pw_rigid:
-        h5g.require_dataset("x_shifts_els",shape=np.shape(mc.x_shifts_els),data=mc.x_shifts_els,dtype=mc.x_shifts_els[0][0].dtype)
-        h5g.require_dataset("y_shifts_els",shape=np.shape(mc.y_shifts_els),data=mc.y_shifts_els,dtype=mc.y_shifts_els[0][0].dtype)
-        h5g.require_dataset("coord_shifts_els",shape=np.shape(xy_grid),data=xy_grid,dtype=type(xy_grid[0][0]))
-        h5g.require_dataset("reference_image",shape=np.shape(mc.total_template_els),data=mc.total_template_els,dtype=mc.total_template_els.dtype)
+        h5g.require_dataset("x_shifts_els", shape=np.shape(mc.x_shifts_els), data=mc.x_shifts_els, dtype=mc.x_shifts_els[0][0].dtype)
+        h5g.require_dataset("y_shifts_els", shape=np.shape(mc.y_shifts_els), data=mc.y_shifts_els, dtype=mc.y_shifts_els[0][0].dtype)
+        h5g.require_dataset("coord_shifts_els", shape=np.shape(xy_grid), data=xy_grid, dtype=type(xy_grid[0][0]))
+        h5g.require_dataset("reference_image", shape=np.shape(mc.total_template_els), data=mc.total_template_els, dtype=mc.total_template_els.dtype)
     else:
-        h5g.require_dataset("shifts_rig",shape=np.shape(mc.shifts_rig),data=mc.shifts_rig,dtype=mc.shifts_rig[0].dtype)
-        h5g.require_dataset("coord_shifts_rig",shape=np.shape(xy_grid),data=xy_grid,dtype=type(xy_grid[0][0]))
-        h5g.require_dataset("reference_image",shape=np.shape(mc.total_template_rig),data=mc.total_template_rig,dtype=mc.total_template_rig.dtype)
+        h5g.require_dataset("shifts_rig", shape=np.shape(mc.shifts_rig), data=mc.shifts_rig, dtype=mc.shifts_rig[0].dtype)
+        h5g.require_dataset("coord_shifts_rig", shape=np.shape(xy_grid), data=xy_grid, dtype=type(xy_grid[0][0]))
+        h5g.require_dataset("reference_image", shape=np.shape(mc.total_template_rig), data=mc.total_template_rig, dtype=mc.total_template_rig.dtype)
 
-    h5g.require_dataset("correlation_image",shape=np.shape(correlation_image),data=correlation_image,dtype=correlation_image.dtype)
-    h5g.require_dataset("average_image",shape=np.shape(average_image),data=average_image,dtype=average_image.dtype)
-    h5g.require_dataset("max_image",shape=np.shape(max_image),data=max_image,dtype=max_image.dtype)
+    h5g.require_dataset("correlation_image", shape=np.shape(correlation_image), data=correlation_image, dtype=correlation_image.dtype)
+    h5g.require_dataset("average_image", shape=np.shape(average_image), data=average_image, dtype=average_image.dtype)
+    h5g.require_dataset("max_image", shape=np.shape(max_image), data=max_image, dtype=max_image.dtype)
 
     # Close hdf5 file
     h5f.close()
