@@ -7,8 +7,12 @@ from datetime import datetime
 def parse_scanimage_header(scan):
     header = {}
     for item in scan.header.split('\n'):
-        key, value = item.split(' = ')
-        header[key.replace('.', '_')] = value
+        try:
+            key, value = item.split(' = ')
+            key = re.sub('^scanimage_', '', key.replace('.', '_'))
+            header[key] = value
+        except:
+            pass
     return header
 
 

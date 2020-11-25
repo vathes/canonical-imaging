@@ -8,7 +8,7 @@ schema = SchemaTemplate()
 @schema
 class PhysicalFile(dj.Manual):
     definition = """
-    file_path: varchar(1000)  # filepath relative to root data directory
+    file_path: varchar(255)  # filepath relative to root data directory
     """
 
     @staticmethod

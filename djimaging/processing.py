@@ -3,9 +3,11 @@ import scanreader
 import numpy as np
 import pathlib
 from datetime import datetime
+from uuid import UUID
 
-from .parameter import CaimanParamSet, Suite2pParamSet
 from .imaging import schema, Scan, ScanInfo, Channel, PhysicalFile
+from .utils import dict_to_hash
+
 from djutils.templates import required, optional
 
 from img_loaders import suite2p
@@ -25,25 +27,32 @@ class ProcessingMethod(dj.Lookup):
 @schema
 class ProcessingParamSet(dj.Lookup):
     definition = """
-    -> ProcessingMethod
     paramset_idx:  smallint
     ---
+    -> ProcessingMethod    
     paramset_desc: varchar(128)
+    param_set_hash: uuid
+    unique index (param_set_hash)
+    params: longblob  # dictionary of all applicable parameters
     """
 
-    class Caiman(dj.Part):
-        definition = """
-        -> master
-        ---
-        -> CaimanParamSet
-        """
+    @classmethod
+    def insert_new_params(cls, processing_method: str, paramset_idx: int, paramset_desc: str, params: dict):
+        param_dict = {'processing_method': processing_method,
+                      'paramset_idx': paramset_idx,
+                      'paramset_desc': paramset_desc,
+                      'params': params,
+                      'param_set_hash': UUID(dict_to_hash(params))}
+        q_param = cls & {'param_set_hash': param_dict['param_set_hash']}
 
-    class Suite2p(dj.Part):
-        definition = """
-        -> master
-        ---
-        -> Suite2pParamSet
-        """
+        if q_param:  # If the specified param-set already exists
+            pname = q_param.fetch1('param_set_name')
+            if pname == paramset_idx:  # If the existed set has the same name: job done
+                return
+            else:  # If not same name: human error, trying to add the same paramset with different name
+                raise dj.DataJointError('The specified param-set already exists - name: {}'.format(pname))
+        else:
+            cls.insert1(param_dict)
 
 
 @schema
@@ -51,22 +60,17 @@ class CellCompartment(dj.Lookup):
     definition = """  # cell compartments that can be imaged
     cell_compartment         : char(16)
     """
-    contents = [['axon'], ['soma'], ['bouton']]
+
+    contents = zip(['axon', 'soma', 'bouton'])
 
 
 @schema
-class RoiType(dj.Lookup):
+class MaskType(dj.Lookup):
     definition = """ # possible classifications for a segmented mask
-    roi_type        : varchar(16)
+    mask_type        : varchar(16)
     """
-    contents = [
-        ['soma'],
-        ['axon'],
-        ['dendrite'],
-        ['neuropil'],
-        ['artifact'],
-        ['unknown']
-    ]
+
+    contents = zip(['soma', 'axon', 'dendrite', 'neuropil', 'artefact', 'unknown'])
 
 
 # ===================================== Trigger a processing routine =====================================
@@ -75,8 +79,6 @@ class RoiType(dj.Lookup):
 class ProcessingTask(dj.Manual):
     definition = """
     -> Scan
-    processing_instance: uuid
-    ---
     -> ProcessingParamSet
     """
 
@@ -86,9 +88,9 @@ class Processing(dj.Computed):
     definition = """
     -> ProcessingTask
     ---
-    start_time=null     : datetime  # execution time of this processing task (not available if analysis triggering is not required)
-    completion_time     : datetime  # time of generation of this set of processed, segmented results
-    curation_time=null  : datetime  # time of lastest curation (modification to the file) on this result set
+    proc_completion_time     : datetime  # time of generation of this set of processed, segmented results
+    proc_start_time=null     : datetime  # execution time of this processing task (not available if analysis triggering is NOT required)
+    proc_curation_time=null  : datetime  # time of lastest curation (modification to the file) on this result set
     """
 
     class ProcessingOutputFile(dj.Part):
@@ -113,7 +115,7 @@ class Processing(dj.Computed):
         """
         Retrieve the Suite2p output directory for a given ProcessingTask
         :param processing_task_key: a dictionary of one ProcessingTask
-        :return: a string for full path to the resulting CaImAn output directory
+        :return: a string for full path to the resulting Suite2p output directory
         """
         return None
 
@@ -127,13 +129,16 @@ class Processing(dj.Computed):
         # trigger suite2p or caiman here
         # ----
 
-        method = (ProcessingMethod * ProcessingTask & key).fetch1('processing_method')
+        method = (ProcessingParamSet * ProcessingTask & key).fetch1('processing_method')
 
         if method == 'suite2p':
+            if (ScanInfo & key).fetch1('nrois') > 0:
+                raise NotImplementedError(f'Suite2p ingestion error - Unable to handle ScanImage multi-ROI scanning mode yet')
+
             data_dir = pathlib.Path(Processing._get_suite2p_dir(key))
             if data_dir.exists():
                 s2p_loader = suite2p.Suite2p(data_dir)
-                key = {**key, 'completion_time': s2p_loader.creation_time, 'curation_time': s2p_loader.curation_time}
+                key = {**key, 'proc_completion_time': s2p_loader.creation_time, 'proc_curation_time': s2p_loader.curation_time}
                 self.insert1(key)
                 # Insert file(s)
                 root = pathlib.Path(PhysicalFile._get_root_data_dir())
@@ -145,7 +150,7 @@ class Processing(dj.Computed):
             else:
                 start_time = datetime.now()
                 # trigger Suite2p here
-                # wait for completion, then insert with "start_time", "completion_time", no "curation_time"
+                # wait for completion, then insert with "completion_time", "start_time", no "curation_time"
                 return
         else:
             raise NotImplementedError('Unknown method: {}'.format(method))
@@ -156,7 +161,7 @@ class Processing(dj.Computed):
 @schema
 class MotionCorrection(dj.Imported):
     definition = """ 
-    -> ProcessingTask
+    -> Processing
     ---
     -> Channel.proj(mc_channel='channel')              # channel used for motion correction in this processing task
     """
@@ -201,21 +206,33 @@ class MotionCorrection(dj.Imported):
         x_std                           : float         # (pixels) standard deviation of x shifts
         """
 
+    class Summary(dj.Part):
+        definition = """ # summary images for each field and channel after corrections
+        -> master
+        -> ScanInfo.Field
+        ---
+        ref_image                    : longblob      # image used as alignment template
+        average_image                : longblob      # mean of registered frames
+        correlation_image=null       : longblob      # correlation map (computed during cell detection)
+        max_proj_image=null          : longblob      # max of registered frames
+        """
+
     def make(self, key):
 
-        method = (ProcessingMethod * ProcessingTask & key).fetch1('processing_method')
+        method = (ProcessingParamSet * ProcessingTask & key).fetch1('processing_method')
 
         if method == 'suite2p':
             data_dir = pathlib.Path(Processing._get_suite2p_dir(key))
             s2p_loader = suite2p.Suite2p(data_dir)
 
-            # ---- build motion correction key
+            field_keys = (ScanInfo.Field & key).fetch('KEY', order_by='field_z')
+
             align_chn = s2p_loader.planes[0].alignment_channel
             self.insert1({**key, 'mc_channel': align_chn})
 
             # ---- iterate through all s2p plane outputs ----
             for plane, s2p in s2p_loader.planes.items():
-                mc_key = (ScanInfo.Field * ProcessingTask & key & {'plane': plane}).fetch1('KEY')
+                mc_key = (ScanInfo.Field * ProcessingTask & key & field_keys[plane]).fetch1('KEY')
 
                 # -- rigid motion correction --
                 rigid_mc = {'y_shifts': s2p.ops['yoff'],
@@ -242,42 +259,16 @@ class MotionCorrection(dj.Imported):
                                                   s2p.ops['yoff1'].T, s2p.ops['xoff1'].T))]
                     self.NonRigidMotionCorrection.insert1({**mc_key, **nonrigid_mc})
                     self.Block.insert(nr_blocks)
-        else:
-            raise NotImplementedError('Unknown/unimplemented method: {}'.format(method))
 
-
-@schema
-class MotionCorrectedImages(dj.Imported):
-    definition = """ # summary images for each field and channel after corrections
-    -> MotionCorrection
-    -> ScanInfo.Field
-    ---
-    ref_image                    : longblob      # image used as alignment template
-    average_image                : longblob      # mean of registered frames
-    correlation_image=null       : longblob      # correlation map (computed during cell detection)
-    max_proj_image=null          : longblob      # max of registered frames
-    """
-
-    key_source = MotionCorrection()
-
-    def make(self, key):
-        method = (ProcessingMethod * ProcessingTask & key).fetch1('processing_method')
-
-        if method == 'suite2p':
-            data_dir = pathlib.Path(Processing._get_suite2p_dir(key))
-            s2p_loader = suite2p.Suite2p(data_dir)
-
-            # ---- iterate through all s2p plane outputs ----
-            for plane, s2p in s2p_loader.items():
-                mc_key = (ScanInfo.Field * ProcessingTask & key & {'plane': plane}).fetch1('KEY')
+                # -- summary images --
                 img_dict = {'ref_image': s2p.ref_image,
                             'average_image': s2p.mean_image,
                             'correlation_image': s2p.correlation_map,
                             'max_proj_image': s2p.max_proj_image}
-                self.insert1({**mc_key, **img_dict})
+                self.Summary.insert1({**mc_key, **img_dict})
+
         else:
             raise NotImplementedError('Unknown/unimplemented method: {}'.format(method))
-
 
 # ===================================== Segmentation =====================================
 
@@ -285,9 +276,7 @@ class MotionCorrectedImages(dj.Imported):
 @schema
 class Segmentation(dj.Computed):
     definition = """ # Different mask segmentations.
-    -> MotionCorrection        
-    ---
-    -> Channel.proj(seg_channel='channel')  # channel used for the segmentation
+    -> MotionCorrection    
     """
 
     class Mask(dj.Part):
@@ -295,48 +284,48 @@ class Segmentation(dj.Computed):
         -> master
         mask                : smallint
         ---
-        -> ScanInfo.Field                   # the field this ROI comes from
-        npix                : int           # number of pixels in ROIs
-        center_x            : int           # center x coordinate in pixels
-        center_y            : int           # center y coordinate in pixels
-        xpix                : longblob      # x coordinates in pixels
-        ypix                : longblob      # y coordinates in pixels        
-        weights             : longblob      # weights of the mask at the indices above in column major (Fortran) order
-        """
-
-    class Cell(dj.Part):
-        definition = """
-        -> master.Mask
-        ---
-        is_cell: bool
-        cell_prob: float
+        -> Channel.proj(seg_channel='channel')   # channel used for the segmentation
+        -> ScanInfo.Field                        # the field this ROI comes from
+        mask_npix                : int           # number of pixels in ROIs
+        mask_center_x            : int           # center x coordinate in pixels
+        mask_center_y            : int           # center y coordinate in pixels
+        mask_xpix                : longblob      # x coordinates in pixels
+        mask_ypix                : longblob      # y coordinates in pixels        
+        mask_weights             : longblob      # weights of the mask at the indices above in column major (Fortran) order
         """
 
     def make(self, key):
-        method = (ProcessingMethod * ProcessingTask & key).fetch1('processing_method')
+        method = (ProcessingParamSet * ProcessingTask & key).fetch1('processing_method')
 
         if method == 'suite2p':
             data_dir = pathlib.Path(Processing._get_suite2p_dir(key))
             s2p_loader = suite2p.Suite2p(data_dir)
 
-            # ---- build segmentation key
-            seg_channel = s2p_loader.planes[0].segmentation_channel
-            self.insert1({**key, 'seg_channel': seg_channel})
+            field_keys = (ScanInfo.Field & key).fetch('KEY', order_by='field_z')
 
             # ---- iterate through all s2p plane outputs ----
-            masks = []
+            masks, cells = [], []
             for plane, s2p in s2p_loader.planes.items():
-                seg_key = (ScanInfo.Field * ProcessingTask & key & {'plane': plane}).fetch1('KEY')
+                seg_key = (ScanInfo.Field * ProcessingTask & key & field_keys[plane]).fetch1('KEY')
                 mask_count = len(masks)  # increment mask id from all "plane"
                 for mask_idx, (is_cell, cell_prob, mask_stat) in enumerate(zip(s2p.iscell, s2p.cell_prob, s2p.stat)):
-                    mask = {**seg_key, 'mask': mask_idx + mask_count,
-                            'is_cell': bool(is_cell), 'cell_prob': cell_prob, 'npix': mask_stat['npix'],
-                            'center_x':  mask_stat['med'][1], 'center_y':  mask_stat['med'][0],
-                            'xpix':  mask_stat['xpix'], 'ypix':  mask_stat['ypix'], 'weights':  mask_stat['lam']}
-                    masks.append(mask)
+                    masks.append({**seg_key, 'mask': mask_idx + mask_count, 'seg_channel': s2p.segmentation_channel,
+                                  'mask_npix': mask_stat['npix'],
+                                  'mask_center_x':  mask_stat['med'][1],
+                                  'mask_center_y':  mask_stat['med'][0],
+                                  'mask_xpix':  mask_stat['xpix'],
+                                  'mask_ypix':  mask_stat['ypix'],
+                                  'mask_weights':  mask_stat['lam']})
+                    if is_cell:
+                        cells.append({**seg_key, 'mask_classification_method': 'suite2p_default_classifier',
+                                      'mask': mask_idx + mask_count, 'mask_type': 'soma', 'confidence': cell_prob})
 
+            self.insert1(key)
             self.Mask.insert(masks, ignore_extra_fields=True)
-            self.Cell.insert(masks, ignore_extra_fields=True)
+
+            if cells:
+                MaskClassification.insert1({**key, 'mask_classification_method': 'suite2p_default_classifier'}, allow_direct_insert=True)
+                MaskClassification.MaskType.insert(cells, ignore_extra_fields=True, allow_direct_insert=True)
         else:
             raise NotImplementedError('Unknown/unimplemented method: {}'.format(method))
 
@@ -344,8 +333,10 @@ class Segmentation(dj.Computed):
 @schema
 class MaskClassificationMethod(dj.Lookup):
     definition = """
-    mask_classification_method: varchar(16)
+    mask_classification_method: varchar(32)
     """
+
+    contents = zip(['suite2p_default_classifier'])
 
 
 @schema
@@ -358,9 +349,10 @@ class MaskClassification(dj.Computed):
     class MaskType(dj.Part):
         definition = """
         -> master
-        -> Segmentation.Cell
+        -> Segmentation.Mask
         ---
-        -> RoiType        
+        -> MaskType
+        confidence: float
         """
 
 
@@ -376,15 +368,15 @@ class Fluorescence(dj.Computed):
     class Trace(dj.Part):
         definition = """
         -> master
-        -> Segmentation.Cell
-        -> Channel.proj(fluo_channel='channel')  # the channel that this trace comes from 
+        -> Segmentation.Mask
+        -> Channel.proj(fluo_channel='channel')  # the channel that this trace comes from         
         ---
-        fluo                : longblob  # Raw fluorescence trace
-        neuropil_fluo       : longblob  # Neuropil fluorescence trace
+        fluorescence                : longblob  # Raw fluorescence trace
+        neuropil_fluorescence=null  : longblob  # Neuropil fluorescence trace
         """
 
     def make(self, key):
-        method = (ProcessingMethod * ProcessingTask & key).fetch1('processing_method')
+        method = (ProcessingParamSet * ProcessingTask & key).fetch1('processing_method')
 
         if method == 'suite2p':
             data_dir = pathlib.Path(Processing._get_suite2p_dir(key))
@@ -393,41 +385,70 @@ class Fluorescence(dj.Computed):
             self.insert1(key)
 
             # ---- iterate through all s2p plane outputs ----
-            fluo_traces = []
+            fluo_traces, fluo_chn2_traces = [], []
             for s2p in s2p_loader.planes.values():
                 mask_count = len(fluo_traces)  # increment mask id from all "plane"
                 for mask_idx, (f, fneu) in enumerate(zip(s2p.F, s2p.Fneu)):
                     fluo_traces.append({**key, 'mask': mask_idx + mask_count,
-                                        'fluo_channel': 0, 'fluo': f, 'neuropil_fluo': fneu})
+                                        'fluo_channel': 0,
+                                        'fluorescence': f, 'neuropil_fluorescence': fneu})
                 if len(s2p.F_chan2):
+                    mask_chn2_count = len(fluo_chn2_traces)  # increment mask id from all "plane"
                     for mask_idx, (f2, fneu2) in enumerate(zip(s2p.F_chan2, s2p.Fneu_chan2)):
-                        fluo_traces.append({**key, 'mask': mask_idx + mask_count,
-                                            'fluo_channel': 1, 'fluo': f2, 'neuropil_fluo': fneu2})
+                        fluo_chn2_traces.append({**key, 'mask': mask_idx + mask_chn2_count,
+                                                 'fluo_channel': 1,
+                                                 'fluorescence': f2, 'neuropil_fluorescence': fneu2})
 
-            self.Trace.insert(fluo_traces)
+            self.Trace.insert(fluo_traces + fluo_chn2_traces)
 
         else:
             raise NotImplementedError('Unknown/unimplemented method: {}'.format(method))
 
 
 @schema
-class DeconvolutionMethod(dj.Lookup):
+class ActivityExtractionMethod(dj.Lookup):
     definition = """
-    deconvolution_method: varchar(16)
+    extraction_method: varchar(32)
     """
+
+    contents = zip(['suite2p_deconvolution', 'caiman_deconvolution', 'caiman_dff'])
 
 
 @schema
-class DeconvolvedCalciumActivity(dj.Computed):
-    definition = """  # deconvolved calcium acitivity from fluorescence trace
+class Activity(dj.Computed):
+    definition = """  # inferred neural activity from fluorescence trace - e.g. dff, spikes
     -> Fluorescence
-    -> DeconvolutionMethod
+    -> ActivityExtractionMethod
     """
 
-    class DFF(dj.Part):
-        definition = """  # delta F/F
+    class Trace(dj.Part):
+        definition = """  #
         -> master
         -> Fluorescence.Trace
         ---
-        df_f                : longblob  # delta F/F - deconvolved calcium acitivity 
+        activity_trace: longblob  # 
         """
+
+    def make(self, key):
+
+        method = (ProcessingParamSet * ProcessingTask & key).fetch1('processing_method')
+
+        if method == 'suite2p':
+            if key['extraction_method'] == 'suite2p_deconvolution':
+                data_dir = pathlib.Path(Processing._get_suite2p_dir(key))
+                s2p_loader = suite2p.Suite2p(data_dir)
+
+                self.insert1(key)
+
+                # ---- iterate through all s2p plane outputs ----
+                spikes = []
+                for s2p in s2p_loader.planes.values():
+                    mask_count = len(spikes)  # increment mask id from all "plane"
+                    for mask_idx, spks in enumerate(s2p.spks):
+                        spikes.append({**key, 'mask': mask_idx + mask_count,
+                                       'fluo_channel': 0,
+                                       'activity_trace': spks})
+
+                self.Trace.insert(spikes)
+        else:
+            raise NotImplementedError('Unknown/unimplemented method: {}'.format(method))
