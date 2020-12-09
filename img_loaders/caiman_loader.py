@@ -184,8 +184,12 @@ def save_mc(mc, caiman_fp, is3D):
                                 dtype=mc.z_shifts_els[0][0].dtype)
 
         h5g.require_dataset("coord_shifts_els", shape=np.shape(grid), data=grid, dtype=type(grid[0][0]))
-        h5g.require_dataset("reference_image", shape=np.shape(mc.total_template_els), data=mc.total_template_els,
-                            dtype=mc.total_template_els.dtype)
+
+        # For CaImAn, reference image is still a 2D array even for the case of 3D
+        # Assume that the same ref image is used for all the planes
+        reference_image = np.tile(mc.total_template_els, (3, 1, 1)) if is3D else mc.total_template_els
+        h5g.require_dataset("reference_image", shape=np.shape(reference_image), data=reference_image,
+                            dtype=reference_image.dtype)
     else:
         h5g.require_dataset("shifts_rig", shape=np.shape(mc.shifts_rig), data=mc.shifts_rig, dtype=mc.shifts_rig[0].dtype)
         h5g.require_dataset("coord_shifts_rig", shape=np.shape(grid), data=grid, dtype=type(grid[0][0]))
