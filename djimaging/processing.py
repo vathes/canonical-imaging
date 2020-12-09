@@ -347,11 +347,11 @@ class MotionCorrection(dj.Imported):
                 for b_id in range(len(loaded_cm.motion_correction['x_shifts_els'][0, :])):
                     nonrigid_blocks.append(
                         {**key, 'block_id': b_id,
-                         'block_x': loaded_cm.motion_correction['coord_shifts_els'][b_id, 0:2],
-                         'block_y': loaded_cm.motion_correction['coord_shifts_els'][b_id, 2:4],
-                         'block_z': (loaded_cm.motion_correction['coord_shifts_els'][b_id, 4:6]
+                         'block_x': np.arange(*loaded_cm.motion_correction['coord_shifts_els'][b_id, 0:2]),
+                         'block_y': np.arange(*loaded_cm.motion_correction['coord_shifts_els'][b_id, 2:4]),
+                         'block_z': (np.arange(*loaded_cm.motion_correction['coord_shifts_els'][b_id, 4:6])
                                      if loaded_cm.params.motion['is3D']
-                                     else np.full_like(loaded_cm.motion_correction['coord_shifts_els'][b_id, 0:2], 0)),
+                                     else np.full_like(np.arange(*loaded_cm.motion_correction['coord_shifts_els'][b_id, 0:2], 0))),
                          'x_shifts': loaded_cm.motion_correction['x_shifts_els'][:, b_id],
                          'y_shifts': loaded_cm.motion_correction['y_shifts_els'][:, b_id],
                          'z_shifts': (loaded_cm.motion_correction['z_shifts_els'][:, b_id]
