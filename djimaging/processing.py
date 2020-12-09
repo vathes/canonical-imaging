@@ -201,7 +201,7 @@ class MotionCorrection(dj.Imported):
         block_depth                     : int           # (pixels)
         block_count_y                   : int           # number of blocks tiled in the y direction
         block_count_x                   : int           # number of blocks tiled in the x direction
-        block_count_z                   : int           # number of blocks tiled in the x direction
+        block_count_z                   : int           # number of blocks tiled in the z direction
         """
 
     class Block(dj.Part):
