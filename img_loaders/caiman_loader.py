@@ -187,15 +187,14 @@ def save_mc(mc, caiman_fp, is3D):
 
         # For CaImAn, reference image is still a 2D array even for the case of 3D
         # Assume that the same ref image is used for all the planes
-        reference_image = np.tile(mc.total_template_els, (3, 1, 1)) if is3D else mc.total_template_els
-        h5g.require_dataset("reference_image", shape=np.shape(reference_image), data=reference_image,
-                            dtype=reference_image.dtype)
+        reference_image = np.tile(mc.total_template_els, (correlation_image.shape[-1], 1, 1)) if is3D else mc.total_template_els
     else:
         h5g.require_dataset("shifts_rig", shape=np.shape(mc.shifts_rig), data=mc.shifts_rig, dtype=mc.shifts_rig[0].dtype)
         h5g.require_dataset("coord_shifts_rig", shape=np.shape(grid), data=grid, dtype=type(grid[0][0]))
-        h5g.require_dataset("reference_image", shape=np.shape(mc.total_template_rig), data=mc.total_template_rig,
-                            dtype=mc.total_template_rig.dtype)
+        reference_image = np.tile(mc.total_template_rig, (correlation_image.shape[-1], 1, 1)) if is3D else mc.total_template_rig
 
+    h5g.require_dataset("reference_image", shape=np.shape(reference_image), data=reference_image,
+                        dtype=reference_image.dtype)
     h5g.require_dataset("correlation_image", shape=np.shape(correlation_image), data=correlation_image,
                         dtype=correlation_image.dtype)
     h5g.require_dataset("average_image", shape=np.shape(average_image), data=average_image, dtype=average_image.dtype)
