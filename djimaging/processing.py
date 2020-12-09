@@ -311,19 +311,20 @@ class MotionCorrection(dj.Imported):
             loaded_cm = caiman_loader.CaImAn(data_dir)
 
             self.insert1({**key, 'mc_channel': loaded_cm.alignment_channel})
-
+            
+            is3D = loaded_cm.params.motion['is3D']
             # -- rigid motion correction --
             if not loaded_cm.params.motion['pw_rigid']:
                 rigid_mc = {**key,
                             'x_shifts': loaded_cm.motion_correction['shifts_rig'][:, 0],
                             'y_shifts': loaded_cm.motion_correction['shifts_rig'][:, 1],
                             'z_shifts': (loaded_cm.motion_correction['shifts_rig'][:, 2]
-                                         if loaded_cm.params.motion['is3D']
+                                         if is3D
                                          else np.full_like(loaded_cm.motion_correction['shifts_rig'][:, 0], 0)),
                             'x_std': np.nanstd(loaded_cm.motion_correction['shifts_rig'][:, 0]),
                             'y_std': np.nanstd(loaded_cm.motion_correction['shifts_rig'][:, 1]),
                             'z_std': (np.nanstd(loaded_cm.motion_correction['shifts_rig'][:, 2])
-                                      if loaded_cm.params.motion['is3D']
+                                      if is3D
                                       else np.nan),
                             'outlier_frames': None}
 
@@ -336,11 +337,11 @@ class MotionCorrection(dj.Imported):
                     'block_height': loaded_cm.params.motion['strides'][0] + loaded_cm.params.motion['overlaps'][0],
                     'block_width': loaded_cm.params.motion['strides'][1] + loaded_cm.params.motion['overlaps'][1],
                     'block_depth': (loaded_cm.params.motion['strides'][2] + loaded_cm.params.motion['overlaps'][2]
-                                    if loaded_cm.params.motion['is3D'] else 1),
+                                    if is3D else 1),
                     'block_count_x': len(set(loaded_cm.motion_correction['coord_shifts_els'][:, 0])),
                     'block_count_y': len(set(loaded_cm.motion_correction['coord_shifts_els'][:, 2])),
                     'block_count_z': (len(set(loaded_cm.motion_correction['coord_shifts_els'][:, 4]))
-                                      if loaded_cm.params.motion['is3D'] else 1),
+                                      if is3D else 1),
                     'outlier_frames': None}
 
                 nonrigid_blocks = []
@@ -350,19 +351,19 @@ class MotionCorrection(dj.Imported):
                          'block_x': np.arange(*loaded_cm.motion_correction['coord_shifts_els'][b_id, 0:2]),
                          'block_y': np.arange(*loaded_cm.motion_correction['coord_shifts_els'][b_id, 2:4]),
                          'block_z': (np.arange(*loaded_cm.motion_correction['coord_shifts_els'][b_id, 4:6])
-                                     if loaded_cm.params.motion['is3D']
+                                     if is3D
                                      else np.full_like(np.arange(*loaded_cm.motion_correction['coord_shifts_els'][b_id, 0:2], 0))),
                          'x_shifts': loaded_cm.motion_correction['x_shifts_els'][:, b_id],
                          'y_shifts': loaded_cm.motion_correction['y_shifts_els'][:, b_id],
                          'z_shifts': (loaded_cm.motion_correction['z_shifts_els'][:, b_id]
-                                      if loaded_cm.params.motion['is3D']
+                                      if is3D
                                       else np.full_like(loaded_cm.motion_correction['x_shifts_els'][:, b_id], 0)),
                          'x_std': np.nanstd(loaded_cm.motion_correction['x_shifts_els'][:, b_id]),
                          'y_std': np.nanstd(loaded_cm.motion_correction['y_shifts_els'][:, b_id]),
                          'z_std': (np.nanstd(loaded_cm.motion_correction['z_shifts_els'][:, b_id])
-                                   if loaded_cm.params.motion['is3D']
+                                   if is3D
                                    else np.nan)})
-                    
+
                 self.NonRigidMotionCorrection.insert1(nonrigid_mc)
                 self.Block.insert(nonrigid_blocks)
 
@@ -374,10 +375,11 @@ class MotionCorrection(dj.Imported):
                              'correlation_image': corr_img,
                              'max_proj_image': max_img}
                             for fkey, ref_image, ave_img, corr_img, max_img in zip(
-                    field_keys, loaded_cm.motion_correction['reference_image'],
-                    loaded_cm.motion_correction['average_image'],
-                    loaded_cm.motion_correction['correlation_image'],
-                    loaded_cm.motion_correction['max_image'])]
+                    field_keys,
+                    loaded_cm.motion_correction['reference_image'].transpose(2, 0, 1) if is3D else loaded_cm.motion_correction['reference_image'][np.newaxis, ...],
+                    loaded_cm.motion_correction['average_image'].transpose(2, 0, 1) if is3D else loaded_cm.motion_correction['average_image'][np.newaxis, ...],
+                    loaded_cm.motion_correction['correlation_image'].transpose(2, 0, 1) if is3D else loaded_cm.motion_correction['correlation_image'][np.newaxis, ...],
+                    loaded_cm.motion_correction['max_image'].transpose(2, 0, 1) if is3D else loaded_cm.motion_correction['max_image'][np.newaxis, ...])]
 
             self.Summary.insert(summary_imgs)
 
