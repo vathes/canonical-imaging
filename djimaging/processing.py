@@ -180,28 +180,28 @@ class MotionCorrection(dj.Imported):
     class RigidMotionCorrection(dj.Part):
         definition = """ 
         -> master
-        -> ScanInfo.Field
         ---
         outlier_frames=null             : longblob      # mask with true for frames with outlier shifts (already corrected)
         y_shifts                        : longblob      # (pixels) y motion correction shifts
         x_shifts                        : longblob      # (pixels) x motion correction shifts
+        z_shifts=null                   : longblob      # (pixels) z motion correction shifts (z-drift) 
         y_std                           : float         # (pixels) standard deviation of y shifts across all frames
         x_std                           : float         # (pixels) standard deviation of x shifts across all frames
-        z_drift=null                    : longblob      # z-drift over frame of this Field (plane)
+        z_std=null                      : float         # (pixels) standard deviation of z shifts across all frames
         """
 
     class NonRigidMotionCorrection(dj.Part):
-        """ Piece-wise rigid motion correction - tile the FOV into multiple 2D blocks/patches"""
+        """ Piece-wise rigid motion correction - tile the FOV into multiple 3D blocks/patches"""
         definition = """ 
         -> master
-        -> ScanInfo.Field
         ---
         outlier_frames=null             : longblob      # mask with true for frames with outlier shifts (already corrected)
-        block_height                    : int           # (px)
-        block_width                     : int           # (px)
+        block_height                    : int           # (pixels)
+        block_width                     : int           # (pixels)
+        block_depth                     : int           # (pixels)
         block_count_y                   : int           # number of blocks tiled in the y direction
         block_count_x                   : int           # number of blocks tiled in the x direction
-        z_drift=null                    : longblob      # z-drift over frame of this Field (plane)
+        block_count_z                   : int           # number of blocks tiled in the x direction
         """
 
     class Block(dj.Part):
@@ -211,10 +211,13 @@ class MotionCorrection(dj.Imported):
         ---
         block_y                         : longblob      # (y_start, y_end) in pixel of this block
         block_x                         : longblob      # (x_start, x_end) in pixel of this block
+        block_z                         : longblob      # (z_start, z_end) in pixel of this block
         y_shifts                        : longblob      # (pixels) y motion correction shifts for every frame
         x_shifts                        : longblob      # (pixels) x motion correction shifts for every frame
+        z_shifts=null                   : longblob      # (pixels) x motion correction shifts for every frame
         y_std                           : float         # (pixels) standard deviation of y shifts across all frames
         x_std                           : float         # (pixels) standard deviation of x shifts across all frames
+        z_std=null                      : float         # (pixels) standard deviation of z shifts across all frames
         """
 
     class Summary(dj.Part):
@@ -239,89 +242,144 @@ class MotionCorrection(dj.Imported):
             field_keys = (ScanInfo.Field & key).fetch('KEY', order_by='field_z')
 
             align_chn = loaded_s2p.planes[0].alignment_channel
-            self.insert1({**key, 'mc_channel': align_chn})
 
             # ---- iterate through all s2p plane outputs ----
-            for plane, s2p in loaded_s2p.planes.items():
-                mc_key = (ScanInfo.Field * ProcessingTask & key & field_keys[plane]).fetch1('KEY')
-
+            rigid_mc, nonrigid_mc, nonrigid_blocks = {}, {}, {}
+            summary_imgs = []
+            for idx, (plane, s2p) in enumerate(loaded_s2p.planes.items()):
                 # -- rigid motion correction --
-                rigid_mc = {'y_shifts': s2p.ops['yoff'],
-                            'x_shifts': s2p.ops['xoff'],
-                            'y_std': np.nanstd(s2p.ops['yoff']),
-                            'x_std': np.nanstd(s2p.ops['xoff']),
-                            'outlier_frames': s2p.ops['badframes']}
-
-                self.RigidMotionCorrection.insert1({**mc_key, **rigid_mc})
-
+                if idx == 0:
+                    rigid_mc = {**key,
+                                'y_shifts': s2p.ops['yoff'],
+                                'x_shifts': s2p.ops['xoff'],
+                                'z_shifts': np.full_like(s2p.ops['xoff'], 0),
+                                'y_std': np.nanstd(s2p.ops['yoff']),
+                                'x_std': np.nanstd(s2p.ops['xoff']),
+                                'z_std': np.nan,
+                                'outlier_frames': s2p.ops['badframes']}
+                else:
+                    rigid_mc['y_shifts'] = np.vstack([rigid_mc['y_shifts'], s2p.ops['yoff']])
+                    rigid_mc['y_std'] = np.nanstd(rigid_mc['y_shifts'].flatten())
+                    rigid_mc['x_shifts'] = np.vstack([rigid_mc['x_shifts'], s2p.ops['xoff']])
+                    rigid_mc['x_std'] = np.nanstd(rigid_mc['x_shifts'].flatten())
+                    rigid_mc['outlier_frames'] = np.logical_or(rigid_mc['outlier_frames'], s2p.ops['badframes'])
                 # -- non-rigid motion correction --
                 if s2p.ops['nonrigid']:
-                    nonrigid_mc = {'block_height': s2p.ops['block_size'][0],
-                                   'block_width': s2p.ops['block_size'][1],
-                                   'block_count_y': s2p.ops['nblocks'][0],
-                                   'block_count_x': s2p.ops['nblocks'][1],
-                                   'outlier_frames': s2p.ops['badframes']}
-                    nr_blocks = [{**mc_key, 'block_id': b_id,
-                                  'block_y': b_y, 'block_x': b_x,
-                                  'y_shifts': bshift_y, 'x_shifts': bshift_x,
-                                  'y_std': np.nanstd(bshift_y), 'x_std': np.nanstd(bshift_x)}
-                                 for b_id, (b_y, b_x, bshift_y, bshift_x)
-                                 in enumerate(zip(s2p.ops['xblock'], s2p.ops['yblock'],
-                                                  s2p.ops['yoff1'].T, s2p.ops['xoff1'].T))]
-                    self.NonRigidMotionCorrection.insert1({**mc_key, **nonrigid_mc})
-                    self.Block.insert(nr_blocks)
+                    if idx == 0:
+                        nonrigid_mc = {**key,
+                                       'block_height': s2p.ops['block_size'][0],
+                                       'block_width': s2p.ops['block_size'][1],
+                                       'block_depth': 1,
+                                       'block_count_y': s2p.ops['nblocks'][0],
+                                       'block_count_x': s2p.ops['nblocks'][1],
+                                       'block_count_z': len(loaded_s2p.planes),
+                                       'outlier_frames': s2p.ops['badframes']}
+                    else:
+                        nonrigid_mc['outlier_frames'] = np.logical_or(nonrigid_mc['outlier_frames'], s2p.ops['badframes'])
+                    for b_id, (b_y, b_x, bshift_y, bshift_x) in enumerate(zip(s2p.ops['xblock'], s2p.ops['yblock'],
+                                                                              s2p.ops['yoff1'].T, s2p.ops['xoff1'].T)):
+                        if b_id in nonrigid_blocks:
+                            nonrigid_blocks[b_id]['y_shifts'] = np.vstack([nonrigid_blocks[b_id]['y_shifts'], bshift_y])
+                            nonrigid_blocks[b_id]['y_std'] = np.nanstd(nonrigid_blocks[b_id]['y_shifts'].flatten())
+                            nonrigid_blocks[b_id]['x_shifts'] = np.vstack([nonrigid_blocks[b_id]['x_shifts'], bshift_x])
+                            nonrigid_blocks[b_id]['x_std'] = np.nanstd(nonrigid_blocks[b_id]['x_shifts'].flatten())
+                        else:
+                            nonrigid_blocks[b_id] = {**key, 'block_id': b_id,
+                                                     'block_y': b_y, 'block_x': b_x,
+                                                     'block_z': np.full_like(b_x, plane),
+                                                     'y_shifts': bshift_y, 'x_shifts': bshift_x,
+                                                     'z_shifts': np.full((len(loaded_s2p.planes), len(bshift_x)), 0),
+                                                     'y_std': np.nanstd(bshift_y), 'x_std': np.nanstd(bshift_x),
+                                                     'z_std': np.nan}
 
                 # -- summary images --
-                img_dict = {'ref_image': s2p.ref_image,
-                            'average_image': s2p.mean_image,
-                            'correlation_image': s2p.correlation_map,
-                            'max_proj_image': s2p.max_proj_image}
-                self.Summary.insert1({**mc_key, **img_dict})
+                mc_key = (ScanInfo.Field * ProcessingTask & key & field_keys[plane]).fetch1('KEY')
+                summary_imgs.append({**mc_key,
+                                     'ref_image': s2p.ref_image,
+                                     'average_image': s2p.mean_image,
+                                     'correlation_image': s2p.correlation_map,
+                                     'max_proj_image': s2p.max_proj_image})
+
+            self.insert1({**key, 'mc_channel': align_chn})
+            self.RigidMotionCorrection.insert1(rigid_mc)
+            self.NonRigidMotionCorrection.insert1(nonrigid_mc)
+            self.Block.insert(nonrigid_blocks.values())
+            self.Summary.insert(summary_imgs)
 
         elif method == 'caiman':
             data_dir = pathlib.Path(Processing._get_caiman_dir(key))
             loaded_cm = caiman_loader.CaImAn(data_dir)
 
             self.insert1({**key, 'mc_channel': loaded_cm.alignment_channel})
-            mc_key = (ScanInfo.Field * ProcessingTask & key).fetch1('KEY')
 
             # -- rigid motion correction --
             if not loaded_cm.params.motion['pw_rigid']:
-                rigid_mc = {'y_shifts': loaded_cm.motion_correction['shifts_rig'][:, 1],
+                rigid_mc = {**key,
                             'x_shifts': loaded_cm.motion_correction['shifts_rig'][:, 0],
-                            'y_std': np.nanstd(loaded_cm.motion_correction['shifts_rig'][:, 1]),
+                            'y_shifts': loaded_cm.motion_correction['shifts_rig'][:, 1],
+                            'z_shifts': (loaded_cm.motion_correction['shifts_rig'][:, 2]
+                                         if loaded_cm.params.motion['is3D']
+                                         else np.full_like(loaded_cm.motion_correction['shifts_rig'][:, 0], 0)),
                             'x_std': np.nanstd(loaded_cm.motion_correction['shifts_rig'][:, 0]),
+                            'y_std': np.nanstd(loaded_cm.motion_correction['shifts_rig'][:, 1]),
+                            'z_std': (np.nanstd(loaded_cm.motion_correction['shifts_rig'][:, 2])
+                                      if loaded_cm.params.motion['is3D']
+                                      else np.nan),
                             'outlier_frames': None}
 
-                self.RigidMotionCorrection.insert1({**mc_key, **rigid_mc})
+                self.RigidMotionCorrection.insert1(rigid_mc)
 
             # -- non-rigid motion correction --
             else:
-                nonrigid_mc = {'block_height': loaded_cm.params.motion['strides'][0] + loaded_cm.params.motion['overlaps'][0],
-                               'block_width': loaded_cm.params.motion['strides'][1] + loaded_cm.params.motion['overlaps'][1],
-                               'block_count_y': len(set(loaded_cm.motion_correction['coord_shifts_els'][:, 2])),
-                               'block_count_x': len(set(loaded_cm.motion_correction['coord_shifts_els'][:, 0])),
-                               'outlier_frames': None}
- 
-                nr_blocks = []
+                nonrigid_mc = {
+                    **key,
+                    'block_height': loaded_cm.params.motion['strides'][0] + loaded_cm.params.motion['overlaps'][0],
+                    'block_width': loaded_cm.params.motion['strides'][1] + loaded_cm.params.motion['overlaps'][1],
+                    'block_depth': (loaded_cm.params.motion['strides'][2] + loaded_cm.params.motion['overlaps'][2]
+                                    if loaded_cm.params.motion['is3D'] else 1),
+                    'block_count_x': len(set(loaded_cm.motion_correction['coord_shifts_els'][:, 0])),
+                    'block_count_y': len(set(loaded_cm.motion_correction['coord_shifts_els'][:, 2])),
+                    'block_count_z': (len(set(loaded_cm.motion_correction['coord_shifts_els'][:, 4]))
+                                      if loaded_cm.params.motion['is3D'] else 1),
+                    'outlier_frames': None}
+
+                nonrigid_blocks = []
                 for b_id in range(len(loaded_cm.motion_correction['x_shifts_els'][0, :])):
-                    nr_blocks.append({**mc_key, 'block_id': b_id,
-                                      'block_y': loaded_cm.motion_correction['coord_shifts_els'][b_id, 2:4],
-                                      'block_x': loaded_cm.motion_correction['coord_shifts_els'][b_id, 0:2],
-                                      'y_shifts': loaded_cm.motion_correction['y_shifts_els'][:, b_id],
-                                      'x_shifts': loaded_cm.motion_correction['x_shifts_els'][:, b_id],
-                                      'y_std': np.nanstd(loaded_cm.motion_correction['y_shifts_els'][:, b_id]),
-                                      'x_std': np.nanstd(loaded_cm.motion_correction['x_shifts_els'][:, b_id])})
+                    nonrigid_blocks.append(
+                        {**key, 'block_id': b_id,
+                         'block_x': loaded_cm.motion_correction['coord_shifts_els'][b_id, 0:2],
+                         'block_y': loaded_cm.motion_correction['coord_shifts_els'][b_id, 2:4],
+                         'block_z': (loaded_cm.motion_correction['coord_shifts_els'][b_id, 4:6]
+                                     if loaded_cm.params.motion['is3D']
+                                     else np.full_like(loaded_cm.motion_correction['coord_shifts_els'][b_id, 0:2], 0)),
+                         'x_shifts': loaded_cm.motion_correction['x_shifts_els'][:, b_id],
+                         'y_shifts': loaded_cm.motion_correction['y_shifts_els'][:, b_id],
+                         'z_shifts': (loaded_cm.motion_correction['z_shifts_els'][:, b_id]
+                                      if loaded_cm.params.motion['is3D']
+                                      else np.full_like(loaded_cm.motion_correction['x_shifts_els'][:, b_id], 0)),
+                         'x_std': np.nanstd(loaded_cm.motion_correction['x_shifts_els'][:, b_id]),
+                         'y_std': np.nanstd(loaded_cm.motion_correction['y_shifts_els'][:, b_id]),
+                         'z_std': (np.nanstd(loaded_cm.motion_correction['z_shifts_els'][:, b_id])
+                                   if loaded_cm.params.motion['is3D']
+                                   else np.nan)})
                     
-                self.NonRigidMotionCorrection.insert1({**mc_key, **nonrigid_mc})
-                self.Block.insert(nr_blocks)
+                self.NonRigidMotionCorrection.insert1(nonrigid_mc)
+                self.Block.insert(nonrigid_blocks)
 
             # -- summary images --
-            img_dict = {'ref_image': loaded_cm.motion_correction['reference_image'][...],
-                        'average_image': loaded_cm.motion_correction['average_image'][...],
-                        'correlation_image': loaded_cm.motion_correction['correlation_image'][...],
-                        'max_proj_image': loaded_cm.motion_correction['max_image'][...]}
-            self.Summary.insert1({**mc_key, **img_dict})
+            field_keys = (ScanInfo.Field & key).fetch('KEY', order_by='field_z')
+
+            summary_imgs = [{**fkey, 'ref_image': ref_image,
+                             'average_image': ave_img,
+                             'correlation_image': corr_img,
+                             'max_proj_image': max_img}
+                            for fkey, ref_image, ave_img, corr_img, max_img in zip(
+                    field_keys, loaded_cm.motion_correction['reference_image'],
+                    loaded_cm.motion_correction['average_image'],
+                    loaded_cm.motion_correction['correlation_image'],
+                    loaded_cm.motion_correction['max_image'])]
+
+            self.Summary.insert(summary_imgs)
 
         else:
             raise NotImplementedError('Unknown/unimplemented method: {}'.format(method))
